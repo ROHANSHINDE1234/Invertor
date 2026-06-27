@@ -1,0 +1,25 @@
+# Build output
+build/
+*.elf
+*.bin
+*.hex
+*.map
+*.o
+*.obj
+*.d
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+
+# VS Code workspace-specific (keep some, ignore others)
+.vscode/ipch/
+*.code-workspace
+
+# OS-generated junk
+Thumbs.db
+Desktop.ini
+.DS_Store
