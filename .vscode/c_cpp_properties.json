@@ -18,13 +18,14 @@
         {
             "name": "STM32",
             "includePath": [
+                "${workspaceFolder}/include",
                 "${workspaceFolder}/include/CMSIS",
                 "${workspaceFolder}/include/Device"
             ],
             "defines": [
                 "STM32F103xB"
             ],
-            "compilerPath": "C:\\Program Files (x86)\\Arm GNU Toolchain mingw-w64-i686-arm-none-eabi\\bin\\arm-none-eabi-gcc.exe",
+            "compilerPath": "C:/Program Files (x86)/Arm/GNU Toolchain mingw-w64-i686-arm-none-eabi/bin/arm-none-eabi-gcc.exe",
             "cStandard": "c11",
             "intelliSenseMode": "gcc-arm"
         }

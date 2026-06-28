@@ -17,12 +17,14 @@ set(CMAKE_EXE_LINKER_FLAGS
 # This tells CMake to create an executable target with the specified name and source files
 add_executable(${CMAKE_PROJECT_NAME}.elf
     src/main.c
+    src/gpio_driver.c
     src/system_stm32f1xx.c
     startup/startup_stm32f103xb.s
 )
 
 # This tells CMake to include the specified directories when compiling the target
 target_include_directories(${CMAKE_PROJECT_NAME}.elf PRIVATE
+    include
     include/CMSIS
     include/Device
 )

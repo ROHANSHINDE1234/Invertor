@@ -1,16 +1,15 @@
-#include "stm32f1xx.h"
+#include "hw_config.h"
+#include "gpio_driver.h"
 
 void delay(volatile uint32_t count) {
     while (count--);
 }
 
 int main(void) {
-    RCC->APB2ENR |= RCC_APB2ENR_IOPCEN;
+    gpio_output_init(LED_PORT, LED_PIN);
 
-    GPIOC->CRH &= ~(0xF << 4*(13-8));
-    GPIOC->CRH |=  (0x1 << 4*(13-8));
     while (1) {
-        GPIOC->ODR ^= (1 << 13);
+        gpio_toggle(LED_PORT, LED_PIN);
         delay(500000);
     }
 }
