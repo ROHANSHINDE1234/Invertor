@@ -19,6 +19,7 @@ add_executable(${CMAKE_PROJECT_NAME}.elf
     src/main.c
     src/gpio_driver.c
     src/clock_config.c
+    src/pwm_driver.c
     src/system_stm32f1xx.c
     startup/startup_stm32f103xb.s
 )

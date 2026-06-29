@@ -26,6 +26,26 @@ void gpio_output_init(GPIO_TypeDef *port, uint8_t pin) {
     }
 }
 
+void gpio_af_output_init(GPIO_TypeDef *port, uint8_t pin) {
+    gpio_clock_enable(port);
+
+    if (pin < 8) {
+        port->CRL &= ~(0xF << (4 * pin));
+        port->CRL |=  (0xB << (4 * pin));
+    } else {
+        port->CRH &= ~(0xF << (4 * (pin - 8)));
+        port->CRH |=  (0xB << (4 * (pin - 8)));
+    }
+}
+
+void gpio_write(GPIO_TypeDef *port, uint8_t pin, uint8_t state) {
+    if (state) {
+        port->BSRR = (1 << pin);
+    } else {
+        port->BSRR = (1 << (pin + 16));
+    }
+}
+
 void gpio_toggle(GPIO_TypeDef *port, uint8_t pin) {
     port->ODR ^= (1 << pin);
 }
