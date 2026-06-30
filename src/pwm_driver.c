@@ -7,6 +7,7 @@ void pwm_pushpull_init(void) {
 
     gpio_af_output_init(PWM_PORT, PWM_PIN_CH1);   // PB6, hardware PWM
     gpio_output_init(PWM_PORT, PWM_PIN_CH2);      // PB7, plain output (software-driven)
+    gpio_write(PWM_PORT, PWM_PIN_CH2, 0);    // ADD: ensure PB7 starts LOW
     TIM4->PSC = 0;
     TIM4->ARR = PWM_ARR;
 
@@ -25,6 +26,7 @@ void pwm_pushpull_init(void) {
     NVIC_EnableIRQ(TIM4_IRQn);
 
     TIM4->CR1 |= TIM_CR1_ARPE;
+    TIM4->CNT = 0;                           // ADD: ensure counter starts from 0
     TIM4->CR1 |= TIM_CR1_CEN;
 }
 

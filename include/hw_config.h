@@ -16,11 +16,24 @@
 #define PWM_FREQ_HZ     25000UL
 #define SYSCLK_HZ       8000000UL
 
+// // ---- Push-pull timing, derived from 8MHz clock, 40us period ----
+// #define PWM_ARR         319    // 320 ticks = 40us period (25kHz)
+// #define PWM_CCR1_FALL   128    // Q1 (PB6) falls at 16us
+// #define PWM_CCR3_RISE   160    // Q2 (PB7) rises at 20us
+// #define PWM_CCR4_FALL   288    // Q2 (PB7) falls at 36us
+
+
+/*
+t=0µs    Q1 rises (hardware, period boundary)
+t=12µs   Q1 falls  (CCR1=60)
+t=20µs   Q2 rises  (CCR3=160, ISR)   ← 10µs dead-time gap
+t=32µs   Q2 falls  (CCR4=220, ISR)
+t=40µs   wraps     ← 10µs dead-time gap
+*/
 // ---- Push-pull timing, derived from 8MHz clock, 40us period ----
 #define PWM_ARR         319    // 320 ticks = 40us period (25kHz)
-#define PWM_CCR1_FALL   128    // Q1 (PB6) falls at 16us
+#define PWM_CCR1_FALL   60    // Q1 (PB6) falls at 16us
 #define PWM_CCR3_RISE   160    // Q2 (PB7) rises at 20us
-#define PWM_CCR4_FALL   288    // Q2 (PB7) falls at 36us
-
+#define PWM_CCR4_FALL   220    // Q2 (PB7) falls at 36us
 
 #endif
