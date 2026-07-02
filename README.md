@@ -1,12 +1,52 @@
-# Solar-Powered Backup System — DIY Project
+# Invertor — Solar-Powered Backup System (DIY)
 
-A personal DIY project to build a solar-powered backup system for home use, built around a LiFePO4 battery, a custom PCB charger, and an STM32 BluePill microcontroller.
+A personal DIY project to build a solar-powered backup power system for home use: a LiFePO4 battery charged by solar, protected by a BMS, and stepped up to 230V AC through an STM32-driven push-pull inverter. This repo contains the STM32F103 ("Blue Pill") inverter firmware plus the design documents (transformer specs, LTspice schematic) for the power stage.
 
 ---
 
 ## Project Status
 
-> **Phase 1 in progress — System design and component selection**
+> **Inverter Stage 1 firmware working** — TIM4-based push-pull PWM generation on the STM32F103C8T6, running from the external 8MHz crystal. Charger/BMS front-end is still in the design phase (see [Phases](#phases)).
+
+---
+
+## Repository Structure
+
+```
+Invertor/
+├── CMakeLists.txt                     # Cross-compile build (arm-none-eabi-gcc, Cortex-M3)
+├── README.md
+├── CLAUDE.md                          # Notes for AI-assisted work in this repo
+├── .gitignore
+├── .vscode/
+│   ├── c_cpp_properties.json          # IntelliSense config (Win32 + STM32 targets)
+│   └── launch.json                    # cortex-debug launch config (OpenOCD + ST-Link)
+│
+├── src/                                # Firmware sources
+│   ├── main.c                         # Entry point: clock init, PWM init, main loop
+│   ├── clock_config.c                 # HSE (external crystal) clock startup
+│   ├── gpio_driver.c                  # Minimal register-level GPIO driver
+│   ├── pwm_driver.c                   # TIM4 push-pull PWM + dead-time ISR
+│   └── system_stm32f1xx.c             # CMSIS system init (vendor-provided)
+│
+├── include/                            # Headers
+│   ├── hw_config.h                    # Pin mapping + PWM timing constants (board-level config)
+│   ├── clock_config.h
+│   ├── gpio_driver.h
+│   ├── pwm_driver.h
+│   ├── CMSIS/                         # ARM CMSIS core headers (Cortex-M0/M3/M4/M7/M23/M33...)
+│   └── Device/                        # ST STM32F1 device headers (register definitions)
+│
+├── startup/
+│   └── startup_stm32f103xb.s          # Reset handler + interrupt vector table (CMSIS/ST)
+│
+├── linker/
+│   └── STM32F103XB_FLASH.ld           # Linker script: 128K FLASH / 20K RAM memory map
+│
+├── Pushpull_ckt.asc                   # LTspice schematic — push-pull inverter power stage
+├── EE20_Transformer_Spec_RevE_FINAL.docx     # Push-pull transformer design spec
+└── Transformer_Design_Revision_History.docx  # Transformer design revision notes
+```
 
 ---
 
@@ -30,10 +70,61 @@ Solar Panel Array (12V, ~6W)
   LiFePO4 Battery — 12.8V 7Ah (89.6Wh)
         │
         ▼
-  Fuse (2A blade) → DC Output → Inverter (Phase 2)
+  Fuse (2A blade) → DC Input → STM32 Push-Pull Inverter (this repo)
+        │
+        ▼
+  Push-pull transformer → 230V AC Output
 ```
 
 Optional monitoring layer: STM32 BluePill + INA219 (I2C) reading charge current and battery voltage.
+
+---
+
+## Inverter Firmware (this repo)
+
+The firmware runs on an STM32F103C8T6 ("Blue Pill") and generates a dead-time-protected push-pull PWM drive for two MOSFETs feeding the center-tapped primary of the step-up transformer (see `Pushpull_ckt.asc` and the transformer spec `.docx` files for the power stage this drives).
+
+### Architecture
+
+| Module | Responsibility |
+|---|---|
+| `clock_config.c` | Switches system clock to the external HSE crystal (8MHz) |
+| `gpio_driver.c` | Bare-metal GPIO helpers (push-pull output init, AF output init, write, toggle) |
+| `pwm_driver.c` | Configures TIM4 for push-pull switching and handles dead-time via `TIM4_IRQHandler` |
+| `hw_config.h` | Single source of truth for pin mapping and PWM timing constants |
+| `main.c` | Wires the above together: clock → PWM → status LED → idle loop |
+
+### PWM / Dead-time scheme
+
+- **Timer:** TIM4, `PSC = 0`, `ARR = 319` → 320 ticks/period @ 8MHz = 40µs period = **25kHz** switching frequency.
+- **Channel 1 (PB6, TIM4_CH1):** Hardware PWM output — high from period start, falls at `CCR1` (dead-time edge for Q1).
+- **Channel 2 (PB7):** Plain GPIO, software-driven from `TIM4_IRQHandler` using CC3/CC4 compare interrupts (`CCR3` = rise, `CCR4` = fall), so Q1 and Q2 never overlap.
+
+```
+t=0µs    Q1 rises (hardware, period boundary)
+t=12µs   Q1 falls  (CCR1=60)
+t=20µs   Q2 rises  (CCR3=160, ISR)   ← 10µs dead-time gap
+t=32µs   Q2 falls  (CCR4=220, ISR)
+t=40µs   wraps     ← 10µs dead-time gap
+```
+
+All timing constants live in [include/hw_config.h](include/hw_config.h) — change `PWM_ARR`/`PWM_CCR*` there rather than in `pwm_driver.c`.
+
+### Build
+
+Requires the `arm-none-eabi` GCC toolchain and CMake ≥ 3.20.
+
+```bash
+mkdir build && cd build
+cmake -G "MinGW Makefiles" ..     # or "Unix Makefiles" / Ninja depending on your setup
+cmake --build .
+```
+
+Produces `inverter_firmware.elf` and `inverter_firmware.bin`, and prints a memory usage summary (`arm-none-eabi-size`) as a post-build step.
+
+### Flash / Debug
+
+Debugging is configured in [.vscode/launch.json](.vscode/launch.json) via `cortex-debug` + OpenOCD, targeting an ST-Link probe (`interface/stlink.cfg`, `target/stm32f1x.cfg`). Launch "Debug STM32" from VS Code's Run & Debug panel with the target board connected.
 
 ---
 
@@ -51,6 +142,7 @@ Optional monitoring layer: STM32 BluePill + INA219 (I2C) reading charge current 
 | Max charge current | 500mA |
 | Load | 230V AC, 10W bulb |
 | Target runtime | 3 hours |
+| Inverter switching frequency | 25kHz (TIM4 push-pull) |
 | Inverter efficiency (assumed) | 80% |
 | Required battery energy | ~37.5Wh |
 
@@ -88,6 +180,13 @@ Optional monitoring layer: STM32 BluePill + INA219 (I2C) reading charge current 
 - ICs: DW01A (protection logic) + FS8205A (dual N-channel MOSFET switch)
 - Wiring: Charger → BMS P+/P− | Battery → BMS B+/B−
 
+### Inverter — Push-Pull Stage (STM32-driven)
+- Center-tapped push-pull topology, 12.8V primary side
+- Two N-channel MOSFETs switched 180° out of phase with dead-time (see [PWM / Dead-time scheme](#pwm--dead-time-scheme))
+- Driven directly by STM32F103 GPIO/TIM4 (PB6 hardware PWM, PB7 software-timed)
+- Power stage schematic: `Pushpull_ckt.asc` (LTspice)
+- Transformer design: `EE20_Transformer_Spec_RevE_FINAL.docx`, `Transformer_Design_Revision_History.docx`
+
 ### Optional Monitoring — STM32 BluePill + INA219
 - INA219 (I2C) in series on charge line for current measurement
 - Shunt resistor: 0.1Ω, 1%, 1W
@@ -97,7 +196,7 @@ Optional monitoring layer: STM32 BluePill + INA219 (I2C) reading charge current 
 
 ### Output / Load Path
 - 2A blade fuse on battery positive line
-- DC output to inverter (inverter design is Phase 2 / out of scope for this phase)
+- DC output → push-pull inverter stage → 230V AC load
 
 ---
 
@@ -163,7 +262,7 @@ Optional monitoring layer: STM32 BluePill + INA219 (I2C) reading charge current 
 - [ ] **Phase 1** — Datasheet study, component value calculations, schematic (KiCad)
 - [ ] **Phase 2** — PCB layout (KiCad), Gerber generation, send to JLCPCB
 - [ ] **Phase 3** — Assembly and bring-up
-- [ ] **Phase 4** — Inverter design and AC load integration (230V, 10W)
+- [x] **Phase 4 (started early)** — Inverter push-pull firmware (TIM4 PWM + dead-time) working on STM32 Blue Pill; transformer spec and LTspice schematic drafted
 - [ ] **Phase 5** — WiFi control + LDR automation (STM32 + ESP8266/ESP32)
 
 ---
@@ -171,14 +270,16 @@ Optional monitoring layer: STM32 BluePill + INA219 (I2C) reading charge current 
 ## Tools Used
 
 - KiCad — Schematic and PCB layout
-- VS Code — Firmware development
+- LTspice — Push-pull power stage simulation (`Pushpull_ckt.asc`)
+- VS Code + cortex-debug — Firmware development and hardware debugging
+- CMake + arm-none-eabi-gcc — Firmware build toolchain
+- OpenOCD + ST-Link — Flashing/debugging the STM32F103
 - Git — Version control
-- STM32CubeIDE / PlatformIO — STM32 firmware
 
 ---
 
 ## Notes
 
 - Component sourcing: Lamington Road, Mumbai for most passives and ICs; Amazon India for modules and the battery.
-- Inverter design (H-bridge, SPWM, gate drivers IR2110/IR2104, step-up transformer) is tracked separately and begins after Phase 3.
-- PCB bring-up will require a bench power supply and DMM at minimum; oscilloscope strongly recommended for verifying CN3722 switching waveform.
+- The push-pull inverter firmware (this repo's `src/`, `include/`, `startup/`, `linker/`) is being prototyped ahead of the charger/BMS PCB (Phases 1–3) so the transformer and switching scheme can be validated on the bench first.
+- PCB bring-up will require a bench power supply and DMM at minimum; oscilloscope strongly recommended for verifying CN3722 switching waveform and the TIM4 push-pull dead-time edges.
