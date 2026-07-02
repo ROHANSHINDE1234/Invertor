@@ -16,6 +16,7 @@ void delay(volatile uint32_t count) {
 
 int main(void) {
     clock_init_hse();
+    adc_init();             // configure ADC1 on PA0 (potentiometer)
     pwm_pushpull_init();
 
     gpio_output_init(LED_PORT, LED_PIN);
