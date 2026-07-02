@@ -36,4 +36,19 @@ t=40µs   wraps     ← 10µs dead-time gap
 #define PWM_CCR3_RISE   160    // Q2 (PB7) rises at 20us
 #define PWM_CCR4_FALL   220    // Q2 (PB7) falls at 36us
 
+// ---- Potentiometer ADC input ----
+#define POT_PORT            GPIOA
+#define POT_PIN             0
+#define POT_ADC_CHANNEL     0
+
+// ---- Duty cycle limits (ticks, based on 8MHz / 25kHz / ARR=319) ----
+// Half-period = 160 ticks = 20us
+// Minimum dead-time enforced = 16 ticks = 2us on each side
+#define PWM_DUTY_MIN_TICKS  16     // 10% of half-period = 2us ON
+#define PWM_DUTY_MAX_TICKS  144    // 90% of half-period = 18us ON (2us dead-time)
+#define PWM_HALF_PERIOD     160    // 20us in ticks, Q2 always rises here
+
+
+
+
 #endif

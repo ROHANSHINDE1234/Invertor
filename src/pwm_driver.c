@@ -41,3 +41,15 @@ void TIM4_IRQHandler(void) {
         gpio_write(PWM_PORT, PWM_PIN_CH2, 0);
     }
 }
+
+void pwm_set_duty(uint16_t duty_ticks) {
+    // Clamp to safe range — enforces minimum dead-time on both sides
+    if (duty_ticks < PWM_DUTY_MIN_TICKS) duty_ticks = PWM_DUTY_MIN_TICKS;
+    if (duty_ticks > PWM_DUTY_MAX_TICKS) duty_ticks = PWM_DUTY_MAX_TICKS;
+
+    // Update Q1's hardware PWM falling edge
+    TIM4->CCR1 = duty_ticks;
+
+    // Update Q2's software-driven falling edge (rising edge stays fixed at CCR3=160)
+    TIM4->CCR4 = PWM_HALF_PERIOD + duty_ticks;
+}

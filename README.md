@@ -283,3 +283,8 @@ Debugging is configured in [.vscode/launch.json](.vscode/launch.json) via `corte
 - Component sourcing: Lamington Road, Mumbai for most passives and ICs; Amazon India for modules and the battery.
 - The push-pull inverter firmware (this repo's `src/`, `include/`, `startup/`, `linker/`) is being prototyped ahead of the charger/BMS PCB (Phases 1–3) so the transformer and switching scheme can be validated on the bench first.
 - PCB bring-up will require a bench power supply and DMM at minimum; oscilloscope strongly recommended for verifying CN3722 switching waveform and the TIM4 push-pull dead-time edges.
+
+
+## Changes required
+
+Need a typedef file which will have all uint16_t names defined properly as it looks messy in code.
