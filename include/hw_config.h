@@ -1,87 +1,109 @@
-// Include guards these prevent the contents repetition if the file is been called form many files. This is a good practice to avoid redefinition errors.
+/*
+ * hw_config.h — Hardware Configuration
+ *
+ * THE SINGLE SOURCE OF TRUTH for all hardware-specific definitions in this project.
+ *
+ * HOD RULE: No peripheral address, pin number, timing constant, or hardware
+ * #define may appear in any other file. If hardware changes (pin moved, timer
+ * swapped, clock speed changed), edit ONLY THIS FILE.
+ *
+ * Sections:
+ *   1. System Clock
+ *   2. Onboard LED
+ *   3. Push-Pull PWM — Pin Assignments
+ *   4. Push-Pull PWM — Timer Constants (derived arithmetic shown inline)
+ *   5. Push-Pull PWM — Duty Cycle Limits
+ *   6. Potentiometer ADC Input
+ */
+
 #ifndef HW_CONFIG_H
 #define HW_CONFIG_H
 
-/*
- * hw_config.h — The ONLY file in this project that contains
- * hardware-specific definitions. If a pin, peripheral, or timing
- * constant changes, edit THIS file only. All drivers read from here.
- */
+/* ════════════════════════════════════════════════════════════════════
+ * 1. SYSTEM CLOCK
+ *    HSE = external crystal. Confirmed by reading SystemCoreClock
+ *    in the debugger (returned 8,000,000). Used in all tick derivations.
+ * ════════════════════════════════════════════════════════════════════ */
+#define SYSCLK_HZ               8000000UL   /* 8 MHz HSE external crystal */
 
-// ---- Onboard LED (Blue Pill) ----
-#define LED_PORT        GPIOC // Port C
-#define LED_PIN         13    // Pin 13
+/* ════════════════════════════════════════════════════════════════════
+ * 2. ONBOARD LED
+ *    Blue Pill onboard LED is on Port C, pin 13.
+ * ════════════════════════════════════════════════════════════════════ */
+#define LED_PORT                GPIOC
+#define LED_PIN                 13
 
-/* ── Push-Pull PWM Output Pins ────────────────────────────────── */
-/*
- * TIM4 is on APB1 (not APB2 where GPIO and TIM1 live).
- * PB6 = TIM4 CH1 = Q1 (hardware PWM, zero jitter, alternate-function output)
- * PB7 = Q2 (plain GPIO output, driven by CC3/CC4 silent compare interrupts)
- */
-// ---- Stage 1 Push-Pull PWM (TIM4, CH1=PB6, CH2=PB7) ----
-#define PWM_PORT        GPIOB
-#define PWM_PIN_CH1     6
-#define PWM_PIN_CH2     7
-
-#define PWM_TIMER       TIM4
-
-/* ── Clock & Switching Frequency ──────────────────────────────── */
-#define PWM_FREQ_HZ     25000UL
-#define SYSCLK_HZ       8000000UL
-
-/* ── Timer Register Constants ─────────────────────────────────── */
-/*
- * All values derived from:
- *   tick period = 1 / SYSCLK_HZ = 0.125 µs  (PSC = 0, no prescaling)
- *   full period = 40 µs / 0.125 µs = 320 ticks  →  ARR = 319
- *   half-period = 20 µs / 0.125 µs = 160 ticks  (Q2 always starts here)
+/* ════════════════════════════════════════════════════════════════════
+ * 3. PUSH-PULL PWM — PIN ASSIGNMENTS
  *
- * Startup values (CCR1_INIT, CCR4_INIT) are immediately overwritten
- * by the ADC control loop in the first iteration of main(). They are
- * defined here only to give the timer a safe initial state before
- * the ADC reads the potentiometer for the first time.
- */
-// ---- Push-pull timing, derived from 8MHz clock, 40us period ----
-#define PWM_PSC         0           /* No prescaling: tick = 0.125 µs   */
-#define PWM_ARR         319    // 320 ticks = 40us period (25kHz)
-#define PWM_CCR1_INIT           16          /* Safe startup: Q1 ON for 2 µs     */
-#define PWM_CCR3_RISE           160         /* Q2 ALWAYS rises at 20 µs (FIXED) */
-#define PWM_CCR4_INIT           176         /* Safe startup: Q2 falls at 22 µs  */
-/*                                           CCR4_INIT = CCR3 + CCR1_INIT       */
+ *    TIM4 is on APB1 (not APB2 where GPIO and TIM1 live).
+ *    PB6 = TIM4 CH1 → Q1: hardware PWM output, alternate-function mode
+ *    PB7 = Q2: plain GPIO output, driven by CC3/CC4 compare interrupts
+ * ════════════════════════════════════════════════════════════════════ */
+#define PWM_PORT                GPIOB
+#define PWM_PIN_Q1              6           /* PB6: hardware PWM (TIM4 CH1)     */
+#define PWM_PIN_Q2              7           /* PB7: software ISR-driven GPIO     */
 
-// #define PWM_CCR1_FALL   60    // Q1 (PB6) falls at 16us
-// #define PWM_CCR3_RISE   160    // Q2 (PB7) rises at 20us
-// #define PWM_CCR4_FALL   220    // Q2 (PB7) falls at 36us
-
-
-/* ── Potentiometer ADC Input ───────────────────────────────────── */
-/* 200-ohm pot wiper → PA0 (ADC1, Channel 0)                       */
-#define POT_PORT            GPIOA
-#define POT_PIN             0
-#define POT_ADC_CHANNEL     0
-
-/* ── Potentiometer Duty Cycle Limits ──────────────────────────── */
-/*
- * Duty cycle is the ON-time for both Q1 and Q2 (always equal, for
- * volt-second balance). CCR3 = 160 is fixed. Only CCR1 and CCR4 move.
+/* ════════════════════════════════════════════════════════════════════
+ * 4. PUSH-PULL PWM — TIMER CONSTANTS
  *
- * CCR1 range:  [PWM_DUTY_MIN_TICKS .. PWM_DUTY_MAX_TICKS]
- * CCR4 range:  [CCR3 + MIN         .. CCR3 + MAX        ]
- *           =  [176                .. 288               ]
+ *    Switching frequency: 25 kHz  →  Period = 40 µs
+ *    Timer prescaler (PSC): 0     →  1 tick = 1/8 MHz = 0.125 µs
  *
- * Dead-time at each gap:
- *   Gap 1: CCR3 - CCR1 = 160 - duty  →  at max duty: 32 ticks = 4 µs
- *   Gap 2: ARR+1 - CCR4 = 320 - (160+duty)  →  same = 4 µs at max
+ *    Tick arithmetic:
+ *      Ticks per period  = 40 µs / 0.125 µs = 320   →  ARR = 319
+ *      Half-period ticks = 20 µs / 0.125 µs = 160   (Q2 always starts here)
  *
- * CONSTRAINT: CCR4 must always be < ARR+1 = 320
- *   160 + PWM_DUTY_MAX_TICKS < 320  →  MAX_TICKS < 160
- *   128 satisfies this with a 32-tick (4 µs) safety margin.
- */
-#define PWM_HALF_PERIOD_TICKS   160         /* 20 µs in ticks — Q2 rise (FIXED) */
-#define PWM_DUTY_MIN_TICKS      16          /*  2 µs ON time (minimum, pot CCW) */
-#define PWM_DUTY_MAX_TICKS      128         /* 16 µs ON time (maximum, pot CW)  */
+ *    Waveform targets (Rev E specification):
+ *      Q1 (PB6): rises at tick 0 (period boundary, hardware)
+ *                falls at tick CCR1 (set by pot control)
+ *      Q2 (PB7): rises at tick 160 = 20 µs  ← ALWAYS FIXED, never changes
+ *                falls at tick 160 + CCR1   (same ON-time as Q1)
+ *
+ *    Startup safe values (immediately overwritten by ADC on first loop):
+ *      CCR1_STARTUP = PWM_DUTY_MIN_TICKS = minimum duty (safest state)
+ *      CCR4_STARTUP = PWM_HALF_PERIOD_TICKS + PWM_DUTY_MIN_TICKS
+ * ════════════════════════════════════════════════════════════════════ */
+#define PWM_FREQ_HZ             25000UL
+#define PWM_PSC                 0
+#define PWM_ARR                 319         /* (SYSCLK_HZ / PWM_FREQ_HZ) - 1   */
 
+#define PWM_HALF_PERIOD_TICKS   160         /* 20 µs — Q2 rise point, FIXED     */
 
+/* CCR3 (Q2 rise): set once in init, NEVER modified at runtime.
+ * If this value ever changes, PB7 will no longer start at 20 µs. */
+#define PWM_CCR3_RISE           160         /* = PWM_HALF_PERIOD_TICKS          */
 
+/* ════════════════════════════════════════════════════════════════════
+ * 5. PUSH-PULL PWM — DUTY CYCLE LIMITS
+ *
+ *    duty_ticks controls BOTH Q1 ON-time and Q2 ON-time equally,
+ *    ensuring volt-second balance across the transformer.
+ *
+ *    CCR1 = duty_ticks
+ *    CCR4 = PWM_HALF_PERIOD_TICKS + duty_ticks
+ *
+ *    Dead-time at each gap = (PWM_HALF_PERIOD_TICKS - duty_ticks) × 0.125 µs
+ *    At max duty (128 ticks): dead-time = (160-128) × 0.125 = 4 µs ✓
+ *    At min duty ( 16 ticks): dead-time = (160-16)  × 0.125 = 18 µs
+ *
+ *    CONSTRAINT: CCR4 must always be < ARR+1 = 320
+ *      CCR4_max = 160 + 128 = 288 < 320  ✓  (32-tick margin)
+ *
+ *    MAX_TICKS = 128 enforces 16 µs maximum ON-time per the Rev E spec.
+ * ════════════════════════════════════════════════════════════════════ */
+#define PWM_DUTY_MIN_TICKS      16          /*  2 µs ON  (pot fully CCW)        */
+#define PWM_DUTY_MAX_TICKS      128         /* 16 µs ON  (pot fully CW, Rev E)  */
 
-#endif
+/* ════════════════════════════════════════════════════════════════════
+ * 6. POTENTIOMETER ADC INPUT
+ *
+ *    200-ohm pot wiper → PA0 (ADC1, Channel 0)
+ *    Pot between 3.3V and GND; wiper to PA0.
+ *    ADC result: 0 (pot CCW, 0V) to 4095 (pot CW, 3.3V)
+ * ════════════════════════════════════════════════════════════════════ */
+#define POT_PORT                GPIOA
+#define POT_PIN                 0
+#define POT_ADC_CHANNEL         0
+
+#endif /* HW_CONFIG_H */
