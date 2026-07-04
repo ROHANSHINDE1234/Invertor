@@ -15,7 +15,8 @@ cmake_install.cmake
 CTestTestfile.cmake
 Makefile
 
-# VS Code workspace-specific (keep some, ignore others)
+# VS Code — keep .vscode/ tracked (launch.json, c_cpp_properties.json are reusable)
+# but exclude the IntelliSense cache which is machine-specific
 .vscode/ipch/
 *.code-workspace
 

@@ -1,50 +1,78 @@
+/*
+ * main.c — Application Entry Point
+ *
+ * HOD RULE: This file contains ONLY application-level logic.
+ *   - No register writes (RCC->, TIM->, GPIO->, ADC->)
+ *   - No hardware pin numbers or peripheral names
+ *   - No timing constants (those live in hw_config.h)
+ *   - Only driver function calls and application logic
+ *
+ * Sequence:
+ *   1. clock_init_hse()    — switch to accurate external crystal
+ *   2. adc_init()          — configure pot ADC on PA0
+ *   3. pwm_pushpull_init() — start push-pull switching waveform
+ *   4. Loop: read pot → map to duty → update PWM
+ */
+
 #include "hw_config.h"
-#include "gpio_driver.h"
 #include "clock_config.h"
-#include "pwm_driver.h"
 #include "adc_driver.h"
+#include "gpio_driver.h"
+#include "pwm_driver.h"
 
 /*
- * map_adc_to_duty: Linear mapping from 12-bit ADC reading to duty-cycle ticks.
+ * map_adc_to_duty — Linear mapping from ADC reading to timer ticks.
  *
- * ADC range:   0 (GND at PA0) to 4095 (3.3V at PA0)
- * Duty range:  PWM_DUTY_MIN_TICKS (2 µs) to PWM_DUTY_MAX_TICKS (16 µs)
+ * Input:  adc_val in [0 .. 4095]  (0V to 3.3V at pot wiper)
+ * Output: duty_ticks in [PWM_DUTY_MIN_TICKS .. PWM_DUTY_MAX_TICKS]
+ *                     = [16 .. 128] ticks = [2 µs .. 16 µs]
  *
  * Formula: duty = MIN + (adc_val × (MAX - MIN)) / 4095
+ *
+ * The result is also clamped again inside pwm_set_duty() as a second
+ * safety layer, but the calculation here should already be in range.
  */
-static uint16_t map_adc_to_duty(uint16_t adc_val) {
+static uint16_t map_adc_to_duty(uint16_t adc_val)
+{
     uint32_t range = (uint32_t)(PWM_DUTY_MAX_TICKS - PWM_DUTY_MIN_TICKS);
     return (uint16_t)(PWM_DUTY_MIN_TICKS + ((uint32_t)adc_val * range) / 4095u);
 }
 
-void delay(volatile uint32_t count) {
-    while (count--);
-}
+int main(void)
+{
+    /* Step 1: Switch system clock to external 8 MHz crystal.
+     * Must be first — all timer and ADC timing depends on this clock. */
+    clock_init_hse();
 
-int main(void) {
-    clock_init_hse();     /* Switch to external 8 MHz crystal — must be first */
-    adc_init();           /* Configure ADC1 on PA0 for potentiometer reading  */
-    pwm_pushpull_init();  /* Start TIM4 push-pull PWM on PB6/PB7             */
+    /* Step 2: Initialize ADC for potentiometer reading.
+     * Configures PA0, sets up continuous conversion, runs calibration. */
+    adc_init();
 
-    gpio_output_init(LED_PORT, LED_PIN);
+    /* Step 3: Start push-pull PWM on PB6 and PB7.
+     * Timer begins switching at startup duty. ISR takes over PB7 control.
+     * Switching continues in the background from this point onward. */
+    pwm_pushpull_init();
 
-    while (1) {
-        // gpio_toggle(LED_PORT, LED_PIN);
-        // delay(500000);
+    /* Step 4: Control loop.
+     * Reads pot position, maps to duty cycle, updates both PWM channels.
+     * The PWM timer runs continuously in hardware — this loop only
+     * adjusts the compare register values. */
+    while (1)
+    {
         uint16_t adc_val   = adc_read();
         uint16_t duty      = map_adc_to_duty(adc_val);
         pwm_set_duty(duty);
 
-        /*
-         * Wait at least one switching period (40 µs) before next update.
-         * Even with CCR4 preload, updating faster than one period serves
-         * no purpose and can cause the ADC to race ahead of the timer.
-         * 800 iterations at 8 MHz ≈ 100 µs = 2.5 full switching periods.
-         */
-
-        // Small delay between ADC reads to avoid updating the timer
-        // registers faster than one switching period
-        for (volatile uint32_t i = 0; i < 800; i++);
+        /* Wait approximately one full switching period (40 µs) before
+         * the next ADC read and duty update.
+         *
+         * Why: CCR4 has preload enabled (OC4PE), so its update takes
+         * effect at the next period boundary regardless. However, waiting
+         * here prevents the CPU from updating duty faster than the timer
+         * can consume the new values, and avoids any potential ADC
+         * conversion being triggered during a critical ISR window.
+         *
+         * 800 iterations at 8 MHz ≈ 100 µs = 2.5 switching periods. */
+        for (volatile uint32_t i = 0u; i < 800u; i++);
     }
 }
-// added from Office PC
