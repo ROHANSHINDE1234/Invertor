@@ -49,7 +49,8 @@ int main(void)
     adc_init();
 
     /* Step 3: Start push-pull PWM on PB6 and PB7.
-     * Timer begins switching at startup duty. ISR takes over PB7 control.
+     * Timer begins switching at startup duty. Both pins are hardware PWM
+     * (center-aligned TIM4 CH1/CH2) — no ISR involved in gate driving.
      * Switching continues in the background from this point onward. */
     pwm_pushpull_init();
 
@@ -66,11 +67,10 @@ int main(void)
         /* Wait approximately one full switching period (40 µs) before
          * the next ADC read and duty update.
          *
-         * Why: CCR4 has preload enabled (OC4PE), so its update takes
-         * effect at the next period boundary regardless. However, waiting
-         * here prevents the CPU from updating duty faster than the timer
-         * can consume the new values, and avoids any potential ADC
-         * conversion being triggered during a critical ISR window.
+         * Why: CCR1/CCR2 both have preload enabled, so an update takes
+         * effect at the next period boundary regardless. Waiting here
+         * just prevents the CPU from updating duty faster than the timer
+         * can consume the new values.
          *
          * 800 iterations at 8 MHz ≈ 100 µs = 2.5 switching periods. */
         for (volatile uint32_t i = 0u; i < 800u; i++);

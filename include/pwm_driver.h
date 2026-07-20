@@ -5,20 +5,23 @@
  * of the DC-DC converter using TIM4 on PB6 and PB7.
  *
  * Architecture:
- *   PB6 (Q1): TIM4 CH1 hardware PWM Mode 1.
- *             Output is HIGH while CNT < CCR1, LOW otherwise.
- *             Zero software involvement — peripheral-driven.
+ *   TIM4 runs in CENTER-ALIGNED counting mode (CNT sweeps 0→ARR→0).
+ *   Both channels are genuine hardware PWM outputs — no ISR, no software
+ *   GPIO toggling, no interrupt-latency race in the gate-drive path.
  *
- *   PB7 (Q2): Plain GPIO controlled by TIM4 CC3/CC4 compare interrupts.
- *             CCR3 = 160 (fixed, 20 µs): ISR sets PB7 HIGH  ← NEVER changes
- *             CCR4 = 160 + duty (dynamic): ISR sets PB7 LOW
- *             CCR4 preload (OC4PE) prevents race conditions on CCR4 writes.
+ *   PB6 (Q1): TIM4 CH1, PWM Mode 1 (HIGH while CNT < CCR1).
+ *             Pulse of width 2×CCR1, centered on the trough (CNT=0).
+ *
+ *   PB7 (Q2): TIM4 CH2, PWM Mode 2 (HIGH while CNT >= CCR2).
+ *             Pulse of width 2×(ARR-CCR2), centered on the peak (CNT=ARR),
+ *             i.e. exactly half a period away from Q1's pulse.
  *
  * Dead-time guarantee:
- *   Gap 1 (Q1 fall → Q2 rise): (160 - duty) × 0.125 µs
- *   Gap 2 (Q2 fall → Q1 rise): (160 - duty) × 0.125 µs  [symmetric]
- *   At max duty (128 ticks): both gaps = 4 µs ✓
- *   CCR4 always in range [176..288] < ARR+1=320 — CC4 always fires within period.
+ *   Gap 1 (Q1 fall → Q2 rise): (PWM_HALF_PERIOD_TICKS - duty) × 0.125 µs
+ *   Gap 2 (Q2 fall → Q1 rise): (PWM_HALF_PERIOD_TICKS - duty) × 0.125 µs [symmetric]
+ *   At max duty (128 ticks): both gaps = 4 µs ✓ — and, unlike a software-
+ *   driven edge, that 4 µs is guaranteed by compare hardware on every
+ *   single period, not contingent on interrupt response time.
  */
 
 #ifndef PWM_DRIVER_H
@@ -31,9 +34,11 @@
  * pwm_pushpull_init — Configure TIM4 and GPIO for push-pull operation.
  *
  * After this call:
- *   - PB6 produces hardware PWM at 25 kHz, duty = PWM_DUTY_MIN_TICKS (safe startup)
- *   - PB7 is driven by CC3/CC4 interrupts (same duty as PB6, starting at 20 µs)
- *   - Both outputs are non-overlapping (dead-time guaranteed by clamp in pwm_set_duty)
+ *   - PB6 and PB7 both produce hardware PWM at 25 kHz (center-aligned),
+ *     duty = PWM_DUTY_MIN_TICKS (safe startup)
+ *   - Both outputs are non-overlapping by construction of the compare
+ *     hardware itself (dead-time guaranteed every period, not just on
+ *     average — see pwm_driver.c for the center-aligned mechanism)
  *
  * The duty cycle immediately transitions to pot position on the first call
  * to pwm_set_duty() from the main application loop.
@@ -48,8 +53,8 @@ void pwm_pushpull_init(void);
  *               = [16 .. 128] ticks = [2 µs .. 16 µs]
  *
  * Both channels always have the same ON-time (volt-second balance).
- * Q1 rising edge: always at t=0 (period boundary, hardware)
- * Q2 rising edge: always at t=20 µs (tick 160, CCR3 never changes)
+ * Q1 pulse: centered on the trough (CNT=0 / period boundary)
+ * Q2 pulse: centered on the peak (CNT=ARR), exactly half a period away
  */
 void pwm_set_duty(uint16_t duty_ticks);
 
