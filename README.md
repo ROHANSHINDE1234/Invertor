@@ -10,6 +10,38 @@ A personal DIY project to build a solar-powered backup power system for home use
 
 ---
 
+## Bring-up Notes — H-bridge Stage Added (2026-07-21)
+
+> These notes capture the state of the firmware as flashed to the Blue Pill on 2026-07-21, and the checks to do **before** the code drives real power. Read this first if you are picking the board up for a trial.
+
+### What changed in this revision
+
+Two power stages are now driven by this firmware:
+
+1. **Input side — push-pull (TIM4), reworked to center-aligned dual-hardware-channel.**
+   PB6 (CH1) and PB7 (CH2) are *both* now genuine hardware PWM outputs in center-aligned mode. This replaced the earlier design where PB6 was hardware PWM but PB7 was toggled in software from `TIM4_IRQHandler` on CC3/CC4 compare matches. That software edge raced PB6's hardware-timed edge — the gap shrank to ~4µs at max duty, and interrupt latency (worst at the `-O0` debug build) could eat into it, producing real overlap/shoot-through on the scope. Center-aligned mode makes the dead-time a pure hardware property on every period, with **no ISR in the push-pull gate path**. Same 25kHz, same `(160 − duty) × 0.125µs` dead-time formula. See [PWM / Dead-time scheme](#pwm--dead-time-scheme).
+
+2. **Output side — H-bridge unfolder (TIM3), new.**
+   A 50Hz square-wave full-bridge that unfolds the transformer/rectifier HV DC rail into 230V AC. Four plain-GPIO gates on **PA4=HA, PA5=LA, PA6=HB, PA7=LB**, sequenced by a 4-phase state machine in `TIM3_IRQHandler` with an **all-off dead-time phase at every polarity swap** (1ms) so a leg is never shorted top-to-bottom. Runs independently of the push-pull (separate timer, no phase-lock). See [H-bridge output unfolder (50 Hz)](#h-bridge-output-unfolder-50-hz).
+
+Wiring: `hbridge_init()` is called from [main.c](src/main.c) after `pwm_pushpull_init()`; constants live in [hw_config.h](include/hw_config.h) §7; source added to [CMakeLists.txt](CMakeLists.txt). Flash usage grew 2128 → **2504 B** (of 128K). The project builds clean (`exit 0`, only the standard harmless `nosys`/RWX linker warnings).
+
+### ⚠️ Verify on a scope/logic analyzer BEFORE applying high voltage
+
+This revision is verified by **build + register-level reasoning only — not yet on hardware.** With the board unpowered or on a low-voltage bench supply:
+
+1. **Push-pull dead-time (PB6/PB7).** The center-aligned redesign has *not* been re-confirmed on the scope. Check the dead-time gap is present and symmetric at both low and high duty before trusting it to drive the transformer.
+2. **H-bridge gates (PA4–PA7).** Confirm all four gate waveforms and the ~1ms all-off dead-time at each polarity swap. Only then apply HV to the bridge.
+3. **Gate-driver polarity.** Confirm which logic level turns each MOSFET on in your gate-driver hardware, and that it matches the HA/LA/HB/LB assignment above.
+
+### ⚠️ Open assumption — gate-driver interface
+
+The H-bridge is currently driven as **4 independent, active-high, logic-level (3.3V) gate signals** (2 highs + 2 lows), with dead-time enforced in firmware. This was chosen as the safe, common default for a discrete bridge with individual gate drivers.
+
+**If your driver board is different — e.g. an IR2104-style half-bridge driver that takes one PWM per leg and generates the complementary side + dead-time itself, or an active-low input — the current scheme is wrong and the driver needs reworking.** It's a small change; note the board/part you're using and it can be adapted.
+
+---
+
 ## Repository Structure
 
 ```
@@ -27,7 +59,8 @@ Invertor/
 │   ├── clock_config.c                 # HSE (external crystal) clock startup
 │   ├── gpio_driver.c                  # Minimal register-level GPIO driver
 │   ├── adc_driver.c                   # ADC1 continuous conversion on PA0 (pot input)
-│   ├── pwm_driver.c                   # TIM4 push-pull PWM + dead-time ISR
+│   ├── pwm_driver.c                   # TIM4 center-aligned push-pull PWM (dual HW channel)
+│   ├── hbridge_driver.c               # TIM3 50 Hz H-bridge output unfolder + dead-time ISR
 │   └── system_stm32f1xx.c             # CMSIS system init (vendor-provided)
 │
 ├── include/                            # Headers
@@ -36,6 +69,7 @@ Invertor/
 │   ├── gpio_driver.h
 │   ├── adc_driver.h
 │   ├── pwm_driver.h
+│   ├── hbridge_driver.h
 │   ├── CMSIS/                         # ARM CMSIS core headers (Cortex-M0/M3/M4/M7/M23/M33...)
 │   └── Device/                        # ST STM32F1 device headers (register definitions)
 │
@@ -93,9 +127,10 @@ The firmware runs on an STM32F103C8T6 ("Blue Pill") and generates a dead-time-pr
 | `clock_config.c` | Switches system clock to the external HSE crystal (8MHz) |
 | `gpio_driver.c` | Bare-metal GPIO helpers (push-pull output init, AF output init, write, toggle) |
 | `adc_driver.c` | ADC1 on PA0 in continuous conversion mode — reads the duty-control pot |
-| `pwm_driver.c` | Configures TIM4 for push-pull switching, handles dead-time via `TIM4_IRQHandler`, clamps duty |
+| `pwm_driver.c` | Configures TIM4 (center-aligned) for push-pull switching on PB6/PB7 — both native hardware channels, no ISR — and clamps duty |
+| `hbridge_driver.c` | TIM3 50 Hz H-bridge output unfolder on PA4–PA7; sequences the diagonal pairs with a dead-time gap via `TIM3_IRQHandler` |
 | `hw_config.h` | Single source of truth for pin mapping and PWM timing constants |
-| `main.c` | Wires the above together: clock → ADC → PWM → pot-to-duty control loop |
+| `main.c` | Wires the above together: clock → ADC → push-pull PWM → H-bridge → pot-to-duty control loop |
 
 The codebase follows a strict layering rule: **no peripheral register access or hardware constant appears outside a driver `.c` file and `hw_config.h`.** `main.c` contains only driver calls and application logic.
 
@@ -145,6 +180,28 @@ A 200Ω potentiometer (wiper → PA0, ends across 3.3V/GND) sets the duty at run
 
 Pot fully CCW → 0 → 2µs ON (minimum power). Pot fully CW → 4095 → 16µs ON (maximum per the transformer Rev E spec).
 
+### H-bridge output unfolder (50 Hz)
+
+Second power stage: the push-pull + transformer + rectifier produce a high-voltage DC rail; a full bridge then **unfolds** that rail into 50 Hz AC by alternating its two diagonal switch pairs. Implemented in [src/hbridge_driver.c](src/hbridge_driver.c) on **TIM3**, independent of the push-pull (separate timer, no phase-lock needed for bench work).
+
+- **Gate pins:** PA4 = HA, PA5 = LA, PA6 = HB, PA7 = LB (Leg A high/low, Leg B high/low), plain GPIO. Change in [hw_config.h](include/hw_config.h) if your driver board wires them differently.
+- **Scheme:** a 4-phase state machine advanced by the TIM3 update ISR (1µs tick):
+
+```
+phase 0  POS  : HA + LB on   9 ms   (current A → load → B)
+phase 1  DEAD : all off      1 ms
+phase 2  NEG  : HB + LA on   9 ms   (current B → load → A)
+phase 3  DEAD : all off      1 ms
+                             -----
+                             20 ms  = 50 Hz
+```
+
+The **all-off DEAD phase inserted at every polarity swap** is the safety mechanism: the two switches of a leg are never commanded on in adjacent phases, so the bridge can't be shorted top-to-bottom during a transition. 1 ms is deliberately generous for a first trial — tighten `HBRIDGE_DEAD_TICKS` once the gate drive is characterised.
+
+Unlike the 25 kHz push-pull, this stage is *not* timing-critical (50 Hz, ms-scale dead-time), so a plain GPIO + ISR state machine is used rather than hardware PWM.
+
+> ⚠️ **Bench-trial caution:** this stage switches a high-voltage rail. Verify all four gate waveforms and the dead-time gap on a scope/logic-analyzer **before** applying HV, and confirm your gate-driver board's polarity (which input turns each MOSFET on) matches the HA/LA/HB/LB assignment above.
+
 ### Toolchain
 
 Development host is **Windows 11**. Versions below are what the firmware is currently built and flashed with:
@@ -182,7 +239,7 @@ Produces `inverter_firmware.elf` and `inverter_firmware.bin`, and prints an `arm
 
 ```
    text    data     bss     dec     hex  filename
-   2128      20    1976    4124    101c  inverter_firmware.elf
+   2504      20    1976    4500    1194  inverter_firmware.elf
 ```
 
 There is no unit test suite — this is bare-metal firmware. Correctness is verified on hardware (oscilloscope / logic analyzer on PB6 and PB7) or by register-level reasoning.
@@ -252,7 +309,7 @@ Debugging is configured in [.vscode/launch.json](.vscode/launch.json) via `corte
 ### Inverter — Push-Pull Stage (STM32-driven)
 - Center-tapped push-pull topology, 12.8V primary side
 - Two N-channel MOSFETs switched 180° out of phase with dead-time (see [PWM / Dead-time scheme](#pwm--dead-time-scheme))
-- Driven directly by STM32F103 GPIO/TIM4 (PB6 hardware PWM, PB7 software-timed)
+- Driven directly by STM32F103 TIM4 — PB6 (CH1) and PB7 (CH2), both hardware PWM in center-aligned mode
 - 200Ω duty-control pot on PA0 (ADC1 CH0) for bench adjustment of ON-time
 - Power stage schematic: `Pushpull_ckt.asc` (LTspice)
 - Transformer design: `EE20_Transformer_Spec_RevE_FINAL.docx`, `Transformer_Design_Revision_History.docx`
@@ -261,9 +318,13 @@ Debugging is configured in [.vscode/launch.json](.vscode/launch.json) via `corte
 
 | Pin | Function | Direction |
 |---|---|---|
-| PB6 | TIM4_CH1 — Q1 gate drive (hardware PWM) | AF push-pull output |
-| PB7 | Q2 gate drive (ISR-driven from TIM4 CC3/CC4) | GP push-pull output |
+| PB6 | TIM4_CH1 — Q1 push-pull gate (hardware PWM, mode 1, trough-centered) | AF push-pull output |
+| PB7 | TIM4_CH2 — Q2 push-pull gate (hardware PWM, mode 2, peak-centered) | AF push-pull output |
 | PA0 | ADC1_IN0 — duty-control pot wiper | Analog input |
+| PA4 | H-bridge Leg A high-side gate (HA) | GP push-pull output |
+| PA5 | H-bridge Leg A low-side gate (LA) | GP push-pull output |
+| PA6 | H-bridge Leg B high-side gate (HB) | GP push-pull output |
+| PA7 | H-bridge Leg B low-side gate (LB) | GP push-pull output |
 | PC13 | Onboard LED (defined in `hw_config.h`, not currently driven) | GP push-pull output |
 | OSC_IN / OSC_OUT | 8MHz HSE crystal | — |
 

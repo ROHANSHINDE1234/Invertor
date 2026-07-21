@@ -10,8 +10,9 @@
  * Sequence:
  *   1. clock_init_hse()    — switch to accurate external crystal
  *   2. adc_init()          — configure pot ADC on PA0
- *   3. pwm_pushpull_init() — start push-pull switching waveform
- *   4. Loop: read pot → map to duty → update PWM
+ *   3. pwm_pushpull_init() — start push-pull switching waveform (input stage)
+ *   4. hbridge_init()      — start 50 Hz H-bridge output unfolder
+ *   5. Loop: read pot → map to duty → update PWM
  */
 
 #include "hw_config.h"
@@ -19,6 +20,7 @@
 #include "adc_driver.h"
 #include "gpio_driver.h"
 #include "pwm_driver.h"
+#include "hbridge_driver.h"
 
 /*
  * map_adc_to_duty — Linear mapping from ADC reading to timer ticks.
@@ -54,7 +56,12 @@ int main(void)
      * Switching continues in the background from this point onward. */
     pwm_pushpull_init();
 
-    /* Step 4: Control loop.
+    /* Step 4: Start the 50 Hz H-bridge output unfolder on PA4–PA7.
+     * Free-runs on TIM3 with a 1 ms dead-time at each polarity swap;
+     * independent of the push-pull, no phase-lock needed for bench trials. */
+    hbridge_init();
+
+    /* Step 5: Control loop.
      * Reads pot position, maps to duty cycle, updates both PWM channels.
      * The PWM timer runs continuously in hardware — this loop only
      * adjusts the compare register values. */

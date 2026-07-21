@@ -14,6 +14,7 @@
  *   4. Push-Pull PWM — Timer Constants (derived arithmetic shown inline)
  *   5. Push-Pull PWM — Duty Cycle Limits
  *   6. Potentiometer ADC Input
+ *   7. H-Bridge Output Unfolder (50 Hz)
  */
 
 #ifndef HW_CONFIG_H
@@ -113,5 +114,46 @@
 #define POT_PORT                GPIOA
 #define POT_PIN                 0
 #define POT_ADC_CHANNEL         0
+
+/* ════════════════════════════════════════════════════════════════════
+ * 7. H-BRIDGE OUTPUT UNFOLDER  (50 Hz square-wave)
+ *
+ *    Second power stage. The push-pull + transformer + rectifier produce a
+ *    high-voltage DC rail; this full bridge unfolds that rail into 50 Hz AC
+ *    by alternating its two diagonal switch pairs.
+ *
+ *    Bridge legs (each leg = one high-side + one low-side switch):
+ *        Leg A: HA (high) / LA (low)
+ *        Leg B: HB (high) / LB (low)
+ *      Positive half-cycle: HA + LB conduct   (current A → load → B)
+ *      Negative half-cycle: HB + LA conduct   (current B → load → A)
+ *
+ *    All four gates are plain GPIO driven from the TIM3 update ISR. At 50 Hz
+ *    with a 1 ms dead-time this is nowhere near timing-critical — the ISR
+ *    fires only a few hundred times a second and does four BSRR writes.
+ *
+ *    Pins PA4–PA7 are all free on the Blue Pill (PA0 is the pot). Change here
+ *    if your gate-driver board wires the four gates to different pins.
+ * ════════════════════════════════════════════════════════════════════ */
+#define HBRIDGE_PORT            GPIOA
+#define HBRIDGE_PIN_HA          4           /* Leg A high-side gate            */
+#define HBRIDGE_PIN_LA          5           /* Leg A low-side  gate            */
+#define HBRIDGE_PIN_HB          6           /* Leg B high-side gate            */
+#define HBRIDGE_PIN_LB          7           /* Leg B low-side  gate            */
+
+/* TIM3 timebase for the unfolder state machine.
+ *   PSC = 7 → 8 MHz / 8 = 1 MHz → 1 tick = 1 µs.
+ *   Each 50 Hz period (20 ms) is built from four phases:
+ *       POS active (HA+LB)  : HBRIDGE_ACTIVE_TICKS =  9 ms
+ *       dead-time (all off) : HBRIDGE_DEAD_TICKS   =  1 ms
+ *       NEG active (HB+LA)  : HBRIDGE_ACTIVE_TICKS =  9 ms
+ *       dead-time (all off) : HBRIDGE_DEAD_TICKS   =  1 ms
+ *   Total = 2 × (9 + 1) ms = 20 ms = 50 Hz.
+ *
+ *   The all-off dead-time inserted at EVERY polarity swap is what guarantees
+ *   the bridge is never shorted top-to-bottom while a leg changes state. */
+#define HBRIDGE_TIM_PSC         7           /* 1 µs per tick                    */
+#define HBRIDGE_ACTIVE_TICKS    9000u       /* 9 ms conduction per half-cycle   */
+#define HBRIDGE_DEAD_TICKS      1000u       /* 1 ms dead-time per polarity swap */
 
 #endif /* HW_CONFIG_H */
