@@ -101,8 +101,14 @@
  *    32-tick (4 µs) margin below that limit and enforces 16 µs maximum
  *    ON-time per the Rev E spec.
  * ════════════════════════════════════════════════════════════════════ */
-#define PWM_DUTY_MIN_TICKS      16          /*  2 µs ON  (pot fully CCW)        */
-#define PWM_DUTY_MAX_TICKS      128         /* 16 µs ON  (pot fully CW, Rev E)  */
+#define PWM_DUTY_MIN_TICKS      16          /*  2 µs ON  (minimum power)        */
+#define PWM_DUTY_MAX_TICKS      128         /* 16 µs ON  (Rev E maximum)        */
+
+/* Fixed operating duty. The pot/ADC control has been removed — the push-pull
+ * now runs at this single hardcoded ON-time, set once at startup. Change this
+ * one line to re-tune the operating point; it is clamped to
+ * [PWM_DUTY_MIN_TICKS .. PWM_DUTY_MAX_TICKS] inside pwm_set_duty() regardless. */
+#define PWM_DUTY_FIXED_TICKS    PWM_DUTY_MAX_TICKS  /* 128 ticks = 16 µs ON (Rev E) */
 
 /* ════════════════════════════════════════════════════════════════════
  * 6. POTENTIOMETER ADC INPUT
