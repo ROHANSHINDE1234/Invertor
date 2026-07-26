@@ -15,6 +15,7 @@
  *   5. Push-Pull PWM — Duty Cycle Limits
  *   6. Potentiometer ADC Input
  *   7. H-Bridge Output Unfolder (50 Hz)
+ *   8. Gate-Drive Polarity (6N137 optocoupler compensation)
  */
 
 #ifndef HW_CONFIG_H
@@ -161,5 +162,41 @@
 #define HBRIDGE_TIM_PSC         7           /* 1 µs per tick                    */
 #define HBRIDGE_ACTIVE_TICKS    9000u       /* 9 ms conduction per half-cycle   */
 #define HBRIDGE_DEAD_TICKS      1000u       /* 1 ms dead-time per polarity swap */
+
+/* ════════════════════════════════════════════════════════════════════
+ * 8. GATE-DRIVE POLARITY  (6N137 optocoupler compensation)
+ *
+ *    All six gate lines (push-pull PB6/PB7, H-bridge PA4–PA7) pass through
+ *    6N137 optocouplers, whose output is INVERTING: current in the input LED
+ *    (MCU pin HIGH) pulls the opto output LOW.
+ *
+ *    To preserve the real, MOSFET-level meaning — "firmware asks for ON ⇒ gate
+ *    ON", and critically "dead-time (nothing asked for) ⇒ EVERY gate OFF" — the
+ *    firmware drives ACTIVE-LOW so the single opto inversion is undone:
+ *
+ *      firmware active-low ─▶ 6N137 (inverts) ─▶ opto out active-high ─▶ driver
+ *
+ *    Effect per stage when GATE_DRIVE_INVERTED = 1:
+ *      • Push-pull: TIM4 CH1/CH2 pin polarity flipped via CC1P/CC2P. The ON
+ *        pulses become MCU-LOW (→ opto HIGH); the both-off dead-time becomes
+ *        MCU-both-HIGH (→ opto both LOW = both MOSFETs off). The compare timing
+ *        and 4 µs dead-time WIDTH are unchanged — only the electrical level.
+ *      • H-bridge: gates written with GATE_ACTIVE / GATE_IDLE below.
+ *
+ *    ⚠️ ASSUMES the stage after the opto (gate driver) is NON-inverting. If that
+ *    driver ALSO inverts, the two cancel — set GATE_DRIVE_INVERTED to 0, or the
+ *    all-off dead-time turns into all-ON = both legs shorted. ALWAYS confirm on
+ *    the bench that every gate is OFF during the dead phases, at low voltage,
+ *    before applying HV.
+ * ════════════════════════════════════════════════════════════════════ */
+#define GATE_DRIVE_INVERTED     1           /* 1 = active-low (6N137); 0 = active-high */
+
+#if GATE_DRIVE_INVERTED
+  #define GATE_ACTIVE           0u          /* MCU level that requests "gate ON"  */
+  #define GATE_IDLE             1u          /* MCU level that requests "gate OFF" */
+#else
+  #define GATE_ACTIVE           1u
+  #define GATE_IDLE             0u
+#endif
 
 #endif /* HW_CONFIG_H */

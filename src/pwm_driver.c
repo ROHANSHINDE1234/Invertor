@@ -107,6 +107,17 @@ void pwm_pushpull_init(void)
     TIM4->CCMR1 |=  TIM_CCMR1_OC2PE;           /* CCR2 preload enable            */
     TIM4->CCER  |=  TIM_CCER_CC2E;             /* Connect CH2 to PB7 pin         */
 
+    /* ── 5b. Output polarity for the inverting 6N137 optocoupler ─────
+     * CC1P/CC2P flip the ELECTRICAL LEVEL at PB6/PB7 without touching the
+     * compare timing, so the pulse widths and the 4 µs dead-time GAP are
+     * unchanged — the ON pulses just become active-low, which is correct
+     * through the inverting opto (MCU low → opto high → gate on), and the
+     * both-off dead-time becomes MCU-both-high → opto-both-low → both off.
+     * Driven by GATE_DRIVE_INVERTED in hw_config.h §8. */
+#if GATE_DRIVE_INVERTED
+    TIM4->CCER |= TIM_CCER_CC1P | TIM_CCER_CC2P;
+#endif
+
     /* ── 6. Center-aligned counting mode ─────────────────────────────
      * CMS = 01 (Center-aligned mode 1): CNT counts up 0→ARR, then down
      * ARR→0, repeating. This is what makes the OC1M/OC2M compare logic

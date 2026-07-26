@@ -6,11 +6,11 @@ A personal DIY project to build a solar-powered backup power system for home use
 
 ## Project Status
 
-> **Two-stage inverter firmware working and logic-analyzer verified (2026-07-22).** The STM32F103C8T6 runs from the external 8MHz crystal and drives: (1) an **input-side push-pull** on TIM4 — center-aligned dual-hardware-channel PWM on PB6/PB7, 25kHz, now at a fixed 16µs ON-time (the pot/ADC control has been removed); and (2) a **50Hz H-bridge output unfolder** on TIM3 (PA4–PA7). Both stages' gate timing and dead-time have been confirmed on a logic analyzer — no shoot-through on either stage (see [Verification results](#verification-results-logic-analyzer-2026-07-22)). Charger/BMS front-end is still in the design phase (see [Phases](#phases)).
+> **Two-stage inverter firmware working and logic-analyzer verified — active-low build for the 6N137 optocouplers (2026-07-26).** The STM32F103C8T6 runs from the external 8MHz crystal and drives: (1) an **input-side push-pull** on TIM4 — center-aligned dual-hardware-channel PWM on PB6/PB7, 25kHz, now at a fixed 16µs ON-time (the pot/ADC control has been removed); and (2) a **50Hz H-bridge output unfolder** on TIM3 (PA4–PA7). Both stages' gate timing and dead-time have been confirmed on a logic analyzer — no shoot-through on either stage (see [Verification results](#verification-results-logic-analyzer)). Charger/BMS front-end is still in the design phase (see [Phases](#phases)).
 
 ---
 
-## Bring-up Notes — Two-Stage Inverter (verified 2026-07-22)
+## Bring-up Notes — Two-Stage Inverter (active-low verified 2026-07-26)
 
 > These notes capture the state of the firmware as flashed to the Blue Pill, and where it has been verified. Read this first if you are picking the board up for a trial.
 
@@ -27,40 +27,45 @@ Three changes brought the firmware from single-stage push-pull to a verified two
 3. **Pot/ADC duty control removed — fixed operating point.**
    The push-pull now runs at a single hardcoded duty, `PWM_DUTY_FIXED_TICKS = 128` ticks = 16µs ON (the Rev E maximum), set once at startup in [main.c](src/main.c). The ADC path is gone from the active firmware (`adc_driver.c` remains in the tree but is unused and gc-sectioned out of the binary). Change the one `PWM_DUTY_FIXED_TICKS` line in [hw_config.h](include/hw_config.h) to re-tune.
 
-Wiring: `hbridge_init()` is called from [main.c](src/main.c) after `pwm_pushpull_init()`; constants live in [hw_config.h](include/hw_config.h) §7; source added to [CMakeLists.txt](CMakeLists.txt). Flash usage is **2144 B** (of 128K). The project builds clean (`exit 0`, only the standard harmless `nosys`/RWX linker warnings).
+Wiring: `hbridge_init()` is called from [main.c](src/main.c) after `pwm_pushpull_init()`; constants live in [hw_config.h](include/hw_config.h) §7; source added to [CMakeLists.txt](CMakeLists.txt). Flash usage is **2156 B** (of 128K). The project builds clean (`exit 0`, only the standard harmless `nosys`/RWX linker warnings).
 
-### Verification results (logic analyzer, 2026-07-22)
+### Verification results (logic analyzer)
 
-Both stages were captured on a logic analyzer and cross-checked against the design. Everything matched; **no shoot-through on either stage.**
+Both stages captured on a logic analyzer and cross-checked against the design. The latest captures (2026-07-26) are of the **active-low** build (`GATE_DRIVE_INVERTED = 1`, for the 6N137 optos): a gate is ON when its MCU pin is **LOW**, and the dead-time reads as the relevant pins **HIGH**.
 
-**Input side — push-pull (PB6 = Q1, PB7 = Q2):**
-
-| Quantity | Measured | Expected | ✓ |
-|---|---|---|---|
-| Period / frequency | 40.00 µs → 25.00 kHz | 40 µs / 25 kHz | ✓ |
-| ON-time (each channel) | 16.00 µs | 16 µs (128 ticks) | ✓ |
-| Dead-time (each of 3 gaps) | 4.00 µs | 4 µs = (160−128)×0.125 | ✓ |
-| Phase (Q1↔Q2 pulse centers) | 20.00 µs = 180° | 20 µs / 180° | ✓ |
-| Both channels high together | never | none | ✓ |
-
-**Output side — H-bridge (PA4=HA, PA5=LA, PA6=HB, PA7=LB):**
+**Input side — push-pull (PB6 = Q1, PB7 = Q2), active-low:** ✅ fully verified.
 
 | Quantity | Measured | Expected | ✓ |
 |---|---|---|---|
-| Period / frequency | 20.00 ms → 50.0 Hz | 20 ms / 50 Hz | ✓ |
-| Active conduction / half-cycle | ~9.0 ms | 9000 µs | ✓ |
-| Dead-time (all-4-low) / swap | ~1.00 ms | 1000 µs | ✓ |
+| Period / frequency | 40.0 µs → 25.0 kHz | 40 µs / 25 kHz | ✓ |
+| ON-time (each, as a **LOW** pulse) | 16.0 µs | 16 µs (128 ticks) | ✓ |
+| Dead-time (each gap, **both HIGH**) | 4.0 µs | 4 µs = (160−128)×0.125 | ✓ |
+| Phase (Q1↔Q2 centers) | 20.0 µs = 180° | 20 µs / 180° | ✓ |
+| Both channels LOW together (= both on) | never | none | ✓ |
+
+The active-low inversion for the 6N137 is confirmed working on the primary, with the 25 kHz timing and 4 µs dead-time unchanged from the earlier active-high capture.
+
+**Output side — H-bridge (PA4=HA, PA5=LA, PA6=HB, PA7=LB), active-low:** ✅ fully verified (clean re-capture, 2026-07-26).
+
+| Quantity | Measured | Expected | ✓ |
+|---|---|---|---|
+| Period / frequency | 20.0 ms → 50.0 Hz | 20 ms / 50 Hz | ✓ |
+| Active conduction / half-cycle | ~8.99 ms | 9000 µs | ✓ |
+| Dead-time (**all four HIGH**) / swap | ~1.0 ms | 1000 µs | ✓ |
+| Diagonal pairs | **PA4+PA7 (HA+LB), then PA5+PA6 (HB+LA)** | HA+LB / HB+LA | ✓ |
 | Same-leg overlap (HA&LA or HB&LB) | never | none | ✓ |
-| Diagonal pairs (HA+LB, then HB+LA) | correct | correct | ✓ |
 
-> The first H-bridge capture appeared to show the wrong diagonal pairing; this was traced to the **Ch6/Ch7 logic-analyzer probes being swapped**, not a firmware or wiring fault. With the probes corrected the diagonals are exactly `HA+LB` / `HB+LA` as intended.
+> An earlier 2026-07-26 capture appeared to show same-leg pairs (Ch4+Ch5, Ch6+Ch7) — that was a **Ch5↔Ch7 logic-analyzer probe swap**, not a firmware fault (the source drives the diagonals). With Ch5 on PA5 and Ch7 on PA7 the re-capture shows the correct diagonals `HA+LB` / `HB+LA`, every transition passing cleanly through the all-off dead state — no same-leg overlap.
 
 ### ⚠️ Still to confirm before running real power
 
 The logic-analyzer verification covers the **MCU gate signals** (timing, dead-time, no overlap). It does *not* cover the power side. Before applying HV:
 
-1. **Gate-driver polarity.** Confirm which logic level turns each MOSFET on in your gate-driver hardware, and that it matches the HA/LA/HB/LB assignment. The H-bridge is driven as **4 independent, active-high, 3.3V-logic gate signals** (2 highs + 2 lows), dead-time enforced in firmware. If your driver board instead takes one PWM per leg (e.g. an IR2104 that generates the complement + dead-time itself), or is active-low, the scheme needs a small rework — note the part and it can be adapted.
-2. **Differential output.** Scope node A vs node B across the bridge load and confirm a clean ±HV 50Hz square wave (not both nodes swinging in common mode) before connecting the transformer/load.
+1. **✅ Net drive polarity — resolved for 6N137 + IR2110.** The driver is the **IR2110, which is non-inverting** (HIN→HO, LIN→LO). The chain `MCU → 6N137 (inverts) → IR2110 (non-inverting) → MOSFET` therefore has exactly **one** inversion, which the firmware's active-low drive (`GATE_DRIVE_INVERTED = 1`, [hw_config.h](include/hw_config.h) §8) cancels: MCU low → opto high → IR2110 in high → gate ON; dead-time = MCU all high → opto all low → IR2110 all low → all MOSFETs off. **Correct as flashed.** (Still worth a one-time low-voltage bench check that all gates read OFF during the dead phases.)
+2. **🔴 Power-up / reset safe state.** Active-low drive means "gate OFF" = MCU pin HIGH. During MCU reset and the brief window before `pwm_pushpull_init()`/`hbridge_init()` run, the pins are high-Z inputs — *not* high — so the optos aren't yet commanded off. Either add a **pull-up on each MCU gate line** (so high-Z reset reads as gate-off), **or hold the IR2110 `SD` (shutdown, active-high) pins asserted during reset** (pull SD high, released once firmware is up). **Do not apply HV until the firmware is running.** (With the earlier active-high scheme, reset-low was inherently safe; active-low reverses that, so the hardware must enforce it.)
+3. **IR2110 gives NO dead-time of its own.** It will pass HIN+LIN both-high straight through to HO+LO both-on (leg shoot-through). The cross-conduction protection is entirely the firmware's all-off dead phase (H-bridge) and the center-aligned dead-time (push-pull) — both logic-analyzer verified. Keep the dead-time invariants intact (see [hw_config.h](include/hw_config.h)); consider also using the IR2110 `SD` pins as a hardware backstop.
+4. **Bootstrap high-side supply.** Each IR2110 high-side driver needs its bootstrap cap + diode sized for the switching frequency, and the high-side gate can't stay on indefinitely (bootstrap droop) — fine here (25kHz push-pull / 50Hz H-bridge switch often enough), but verify VS/VB on the scope.
+5. **Differential output.** Scope node A vs node B across the bridge load and confirm a clean ±HV 50Hz square wave (not both nodes swinging in common mode) before connecting the transformer/load.
 
 ---
 
@@ -224,7 +229,7 @@ The **all-off DEAD phase inserted at every polarity swap** is the safety mechani
 
 Unlike the 25 kHz push-pull, this stage is *not* timing-critical (50 Hz, ms-scale dead-time), so a plain GPIO + ISR state machine is used rather than hardware PWM.
 
-The four gate signals, the 1 ms dead-time at every swap, and the `HA+LB` / `HB+LA` diagonal pairing were **confirmed on a logic analyzer (2026-07-22)** — see [Verification results](#verification-results-logic-analyzer-2026-07-22).
+The four gate signals, the 1 ms dead-time at every swap, and the `HA+LB` / `HB+LA` diagonal pairing were **confirmed on a logic analyzer (active-low build, 2026-07-26)** — see [Verification results](#verification-results-logic-analyzer).
 
 > ⚠️ **Before applying HV:** the logic-analyzer check covers the MCU gate signals only. Still confirm your gate-driver board's polarity (which input turns each MOSFET on) matches the HA/LA/HB/LB assignment, and scope the bridge's differential output (node A vs node B) for a clean ±HV 50Hz square wave.
 
@@ -265,10 +270,10 @@ Produces `inverter_firmware.elf` and `inverter_firmware.bin`, and prints an `arm
 
 ```
    text    data     bss     dec     hex  filename
-   2144      20    1976    4140    102c  inverter_firmware.elf
+   2156      20    1976    4152    1038  inverter_firmware.elf
 ```
 
-There is no unit test suite — this is bare-metal firmware. Correctness is verified on hardware (logic analyzer on PB6/PB7 for the push-pull and PA4–PA7 for the H-bridge — see [Verification results](#verification-results-logic-analyzer-2026-07-22)) or by register-level reasoning.
+There is no unit test suite — this is bare-metal firmware. Correctness is verified on hardware (logic analyzer on PB6/PB7 for the push-pull and PA4–PA7 for the H-bridge — see [Verification results](#verification-results-logic-analyzer)) or by register-level reasoning.
 
 ### Flash / Debug
 
@@ -356,6 +361,30 @@ Debugging is configured in [.vscode/launch.json](.vscode/launch.json) via `corte
 | PC13 | Onboard LED (defined in `hw_config.h`, not currently driven) | GP push-pull output |
 | OSC_IN / OSC_OUT | 8MHz HSE crystal | — |
 
+All six gate lines reach the power MOSFETs through optocouplers — see below.
+
+### Gate-Drive Isolation — 6N137 optocouplers + IR2110 drivers
+
+Every gate signal from the STM32 is optically isolated from the power stage, then buffered by **IR2110** high/low-side gate drivers. All **six** lines are routed through **6N137 high-speed optocouplers** — the two push-pull gates (PB6, PB7) and the four H-bridge gates (PA4–PA7):
+
+```
+STM32 3.3V logic ──▶ 6N137 (isolation, INVERTS) ──▶ IR2110 (non-inverting) ──▶ MOSFET gate
+   PB6, PB7 (25kHz)      ×6, one per gate line          H-bridge: 2× IR2110 (one per leg,
+   PA4–PA7 (50Hz)                                          HIN=high-side, LIN=low-side)
+```
+
+The **IR2110 is non-inverting** (HIN→HO, LIN→LO) with an active-high `SD` shutdown. Net inversions MCU→gate = **1** (the 6N137), which the firmware's active-low drive cancels — see the polarity note below. Each IR2110 drives one half-bridge (one high-side + one low-side); the H-bridge uses two. Note the IR2110 provides **no dead-time and no shoot-through protection of its own** — that is entirely the firmware's job (verified), so the dead-time invariants must stay intact.
+
+**Why 6N137 (replacing the earlier K1010):** the K1010 is a slow phototransistor optocoupler — its microsecond-scale response smears the fast 25kHz push-pull edges and cannot preserve the sharp 4µs dead-time, so the "fat" (fast-switching) gate signals came through distorted. The 6N137 is a **logic-output opto rated ~10 Mbit/s (~75 ns propagation delay)**, which passes the 25kHz push-pull and the 50Hz H-bridge edges cleanly. (The H-bridge alone would tolerate a slow opto, but all lines use 6N137 for a uniform, fast, isolated drive.)
+
+**6N137 application requirements (per device):**
+- **Vcc = 4.5–5.5V** on the output side (pin 8) with a **0.1µF bypass cap** right at the pin — mandatory for the internal comparator.
+- **Output pull-up resistor** (e.g. ~1kΩ) from pin 6 to Vcc — the output is open-collector / enable-gated, not push-pull.
+- **Input LED series resistor** sized for ~5–15mA forward current from the 3.3V drive pin.
+- **Enable (pin 7)** tied to Vcc if unused.
+
+> **Polarity — the 6N137 output is INVERTING** (input LED on → output LOW); the **IR2110 after it is non-inverting**, so the chain has one net inversion. The **firmware cancels it** by driving the gates **active-low** (`GATE_DRIVE_INVERTED = 1`, [hw_config.h](include/hw_config.h) §8): on the push-pull via the TIM4 `CC1P`/`CC2P` polarity bits (timing/dead-time width unchanged), on the H-bridge via the `GATE_ACTIVE`/`GATE_IDLE` levels. Result: gate-on = MCU low, and the dead-time (MCU all high → opto all low → IR2110 all low) = all MOSFETs off. ✅ Correct as flashed for 6N137 + IR2110. (If you ever swap to an *inverting* driver, set `GATE_DRIVE_INVERTED = 0`.) Active-low reverses the power-up safe state — see [Still to confirm before running real power](#-still-to-confirm-before-running-real-power) items 1–2.
+
 ### Optional Monitoring — STM32 BluePill + INA219
 - INA219 (I2C) in series on charge line for current measurement
 - Shunt resistor: 0.1Ω, 1%, 1W
@@ -423,6 +452,12 @@ Debugging is configured in [.vscode/launch.json](.vscode/launch.json) via `corte
 | INA219 | SOT-23-8 or module | Amazon India |
 | Shunt resistor | 0.1Ω, 1%, 1W | Lamington Road |
 | Fuse + holder | 2A blade automotive | Local / Lamington Road |
+| Gate-drive optocoupler | **6N137** high-speed (~10 Mbit/s), ×6 — one per gate line; **replaces the slow K1010** which couldn't pass the fast switching edges | Lamington Road |
+| Opto output pull-up | ~1kΩ, ×6 (6N137 open-collector output) | Lamington Road |
+| Opto Vcc bypass cap | 0.1µF ceramic, ×6 (at each 6N137 pin 8) | Lamington Road |
+| Gate driver | **IR2110** (non-inverting high/low-side) — ×2 for the H-bridge (one per leg) + push-pull driver | Lamington Road |
+| Bootstrap diode + cap | fast diode (e.g. UF4007) + ~1µF, per IR2110 high-side | Lamington Road |
+| Gate resistors | ~10–22Ω per MOSFET gate | Lamington Road |
 | Duty-control pot | 200Ω trimmer/rotary — *bench-tuning only; not needed now duty is fixed* | Lamington Road |
 | STM32 BluePill | STM32F103C8T6 | Amazon India / Robu.in |
 | ST-Link V2 programmer | ST-Link V2 clone or genuine | Amazon India / Robu.in |
@@ -455,7 +490,7 @@ Debugging is configured in [.vscode/launch.json](.vscode/launch.json) via `corte
 
 - KiCad — schematic and PCB layout (Phases 1–2, not yet started)
 - LTspice — push-pull power stage simulation (`Pushpull_ckt.asc`)
-- Logic analyzer — verified both stages' gate timing and dead-time (push-pull PB6/PB7, H-bridge PA4–PA7); confirmed no shoot-through (2026-07-22)
+- Logic analyzer — verified both stages' gate timing, dead-time and (active-low) polarity for the 6N137 optos (push-pull PB6/PB7, H-bridge PA4–PA7); confirmed no shoot-through (2026-07-26)
 - Oscilloscope + DMM — bench bring-up
 
 **Not used, deliberately:** STM32 HAL/LL, STM32CubeMX/CubeIDE, or any RTOS. Everything is register-level C against the CMSIS + ST device headers vendored in [include/](include/).

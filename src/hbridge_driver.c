@@ -38,41 +38,46 @@
 /* Current phase of the unfolder state machine (0..3, see file header). */
 static volatile uint8_t hb_phase;
 
-/* Drive all four gates LOW — the dead-time / safe state. */
+/* Drive all four gates to the OFF request level — the dead-time / safe state.
+ * GATE_IDLE is the MCU level meaning "off" (active-low = HIGH through the 6N137);
+ * see hw_config.h §8. */
 static void hbridge_all_off(void)
 {
-    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HA, 0u);
-    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LA, 0u);
-    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HB, 0u);
-    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LB, 0u);
+    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HA, GATE_IDLE);
+    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LA, GATE_IDLE);
+    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HB, GATE_IDLE);
+    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LB, GATE_IDLE);
 }
 
 /*
  * hbridge_apply_phase — Set the four gates for phase p and load TIM3->ARR
  * with that phase's duration.
  *
- * For the active phases, the opposite-leg partner gates are explicitly driven
- * LOW *before* the diagonal pair is driven HIGH. Because every active phase is
- * preceded by an all-off DEAD phase they are already low, but writing them
- * again makes each transition self-contained and impossible to misread: within
- * any single leg only one switch is ever commanded on.
+ * For the active phases, the opposite-leg partner gates are explicitly set to
+ * GATE_IDLE (off) *before* the diagonal pair is set to GATE_ACTIVE (on). Because
+ * every active phase is preceded by an all-off DEAD phase they are already off,
+ * but writing them again makes each transition self-contained and impossible to
+ * misread: within any single leg only one switch is ever commanded on.
+ *
+ * GATE_ACTIVE/GATE_IDLE carry the opto-inversion polarity (hw_config.h §8), so
+ * this logic is unchanged whether the drive is active-high or active-low.
  */
 static void hbridge_apply_phase(uint8_t p)
 {
     switch (p) {
     case 0: /* POS: diagonal HA + LB */
-        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HB, 0u);   /* leg B: low side off first */
-        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LA, 0u);   /* leg A: low side off first */
-        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HA, 1u);   /* leg A high side on         */
-        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LB, 1u);   /* leg B low  side on         */
+        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HB, GATE_IDLE);   /* leg B: low side off first */
+        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LA, GATE_IDLE);   /* leg A: low side off first */
+        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HA, GATE_ACTIVE); /* leg A high side on         */
+        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LB, GATE_ACTIVE); /* leg B low  side on         */
         TIM3->ARR = HBRIDGE_ACTIVE_TICKS;
         break;
 
     case 2: /* NEG: diagonal HB + LA */
-        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HA, 0u);   /* leg A: high side off first */
-        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LB, 0u);   /* leg B: low  side off first */
-        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HB, 1u);   /* leg B high side on         */
-        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LA, 1u);   /* leg A low  side on         */
+        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HA, GATE_IDLE);   /* leg A: high side off first */
+        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LB, GATE_IDLE);   /* leg B: low  side off first */
+        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HB, GATE_ACTIVE); /* leg B high side on         */
+        gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LA, GATE_ACTIVE); /* leg A low  side on         */
         TIM3->ARR = HBRIDGE_ACTIVE_TICKS;
         break;
 
