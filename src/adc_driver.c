@@ -71,7 +71,20 @@ void adc_init(void)
 uint16_t adc_read(void)
 {
     /* Wait for End-Of-Conversion flag (set by hardware when conversion completes) */
-    while (!(ADC1->SR & ADC_SR_EOC));
+    uint32_t dummy = 1000000u; /* Prevent infinite loop if EOC never sets */
+    while (!(ADC1->SR & ADC_SR_EOC) && dummy)
+    {
+        dummy --; /* Prevent compiler from optimizing away the loop */
+    }
+    if (dummy == 0u)
+    {
+        /* EOC never set, return 0 as a safe default. */
+        return 0u;
+    }
+    else
+    {
+        /* EOC set, conversion complete. Read the result below. */
+    }
 
     /* Clear EOC flag before reading DR.
      * In continuous mode, EOC stays set after conversion. Clearing it here
