@@ -25,6 +25,14 @@
 void gpio_output_init(GPIO_TypeDef *port, uint8_t pin);
 
 /*
+ * gpio_output_init_level — Like gpio_output_init, but drives 'level' onto the
+ *   pin WHILE IT IS STILL AN INPUT (via BSRR), then switches it to output — so
+ *   the pin comes up directly at 'level' with no intermediate LOW glitch.
+ *   Use for gate/enable lines that must be OFF from the first instant.
+ */
+void gpio_output_init_level(GPIO_TypeDef *port, uint8_t pin, uint8_t level);
+
+/*
  * gpio_af_output_init — Configure a pin as alternate-function push-pull output.
  *   CRx field = 0xB  (MODE=11 → 50 MHz, CNF=10 → AF push-pull)
  *   Use for: PB6 (Q1, TIM4 CH1 drives this pin directly via hardware PWM)

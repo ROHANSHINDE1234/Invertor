@@ -37,4 +37,17 @@
  */
 void hbridge_init(void);
 
+/*
+ * hbridge_safe_state — GPIO-only safe state, callable before the clock switch.
+ * Enable (PA1) LOW (bridge disabled) + all four gates GATE_IDLE. Call first,
+ * before hbridge_init().
+ */
+void hbridge_safe_state(void);
+
+/*
+ * hbridge_disable — Disable the bridge: drop the enable (PA1 LOW) first, then
+ * all four gates off. For fault/shutdown use.
+ */
+void hbridge_disable(void);
+
 #endif /* HBRIDGE_DRIVER_H */

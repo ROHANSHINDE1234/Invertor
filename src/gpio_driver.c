@@ -50,6 +50,21 @@ void gpio_output_init(GPIO_TypeDef *port, uint8_t pin)
 }
 
 /*
+ * gpio_output_init_level — Set the output level before enabling the output.
+ *
+ * gpio_write() uses BSRR, which sets the ODR latch even while the pin is still
+ * an input. Writing the level first, then switching the pin to push-pull output,
+ * means the pin drives 'level' from the moment it becomes an output — no
+ * transient LOW. Used for gate/enable lines that must be held OFF at startup.
+ */
+void gpio_output_init_level(GPIO_TypeDef *port, uint8_t pin, uint8_t level)
+{
+    gpio_clock_enable(port);
+    gpio_write(port, pin, level);
+    gpio_output_init(port, pin);
+}
+
+/*
  * gpio_af_output_init — Alternate-function push-pull output.
  *
  * CRx 4-bit field encoding:

@@ -58,4 +58,18 @@ void pwm_pushpull_init(void);
  */
 void pwm_set_duty(uint16_t duty_ticks);
 
+/*
+ * pwm_safe_state — Drive PB6/PB7 to the OFF level as plain GPIO, before TIM4
+ * owns them. The Stage-1 IR2110 has SD tied low (always enabled), so the gates
+ * must read OFF from power-up; call first, before pwm_pushpull_init().
+ */
+void pwm_safe_state(void);
+
+/*
+ * pwm_soft_start — Ramp duty from PWM_DUTY_MIN_TICKS to target_ticks (clamped to
+ * PWM_DUTY_MAX_TICKS), holding each 1-tick step for PWM_SOFTSTART_EVENTS_PER_STEP
+ * TIM4 update events (~0.5 s total). Blocking; call once after pwm_pushpull_init().
+ */
+void pwm_soft_start(uint16_t target_ticks);
+
 #endif /* PWM_DRIVER_H */

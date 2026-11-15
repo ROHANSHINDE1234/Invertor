@@ -61,6 +61,18 @@
 #include "hw_config.h"
 #include "gpio_driver.h"
 
+/*
+ * pwm_safe_state — Hold PB6/PB7 at the OFF level as GPIO, before TIM4 takes them.
+ * The Stage-1 IR2110 SD is tied low (always enabled), so the push-pull gates must
+ * be OFF from the first instant. gpio_output_init_level sets the level before the
+ * pin becomes an output, so there is no startup LOW glitch. Runs before the clock
+ * switch (GPIO only); pwm_pushpull_init() later hands the pins to the timer. */
+void pwm_safe_state(void)
+{
+    gpio_output_init_level(PWM_PORT, PWM_PIN_Q1, GATE_IDLE);
+    gpio_output_init_level(PWM_PORT, PWM_PIN_Q2, GATE_IDLE);
+}
+
 void pwm_pushpull_init(void)
 {
     /* ── 1. Enable TIM4 clock ────────────────────────────────────────
@@ -71,9 +83,9 @@ void pwm_pushpull_init(void)
     /* ── 2. Configure output pins ────────────────────────────────────
      * Both Q1 (PB6, TIM4 CH1) and Q2 (PB7, TIM4 CH2) are now hardware
      * PWM outputs — alternate-function push-pull. No plain-GPIO pin,
-     * no software toggling, no gpio_write() in the gate-drive path. */
-    gpio_af_output_init(PWM_PORT, PWM_PIN_Q1);
-    gpio_af_output_init(PWM_PORT, PWM_PIN_Q2);
+     * no software toggling, no gpio_write() in the gate-drive path.
+     * NOTE: the actual gpio_af_output_init() calls are deferred to step 7
+     * (just before CEN), after CC1P/CC2P polarity is set — see there. */
 
     /* ── 3. Timebase ─────────────────────────────────────────────────
      * PSC = 0 → tick = 1 / 8 MHz = 0.125 µs.
@@ -139,6 +151,12 @@ void pwm_pushpull_init(void)
      * CEN:  counter enable — PWM starts here. */
     TIM4->CNT   = 0u;
     TIM4->CR1  |= TIM_CR1_ARPE;
+
+    /* Hand PB6/PB7 to TIM4 only now — after CC1P/CC2P polarity is set — so the
+     * pins go straight to the correct (inverted) idle level, no glitch. */
+    gpio_af_output_init(PWM_PORT, PWM_PIN_Q1);
+    gpio_af_output_init(PWM_PORT, PWM_PIN_Q2);
+
     TIM4->CR1  |= TIM_CR1_CEN;
 }
 
@@ -164,4 +182,26 @@ void pwm_set_duty(uint16_t duty_ticks)
 
     /* Q2 pulse (mode 2, centered on peak): width = 2×(ARR-CCR2) = duty_ticks. */
     TIM4->CCR2 = PWM_HALF_PERIOD_TICKS - half_on;
+}
+
+/*
+ * pwm_soft_start — Ramp duty from PWM_DUTY_MIN_TICKS up to target_ticks.
+ *
+ * Each step raises duty by one tick, then waits PWM_SOFTSTART_EVENTS_PER_STEP
+ * TIM4 update events. In center-aligned mode TIM4 sets UIF at every half-period
+ * (every 20 µs); TIM4 has no interrupt enabled, so polling the flag here is safe
+ * and does not disturb the hardware PWM. Blocking.
+ */
+void pwm_soft_start(uint16_t target_ticks)
+{
+    if (target_ticks > PWM_DUTY_MAX_TICKS) { target_ticks = PWM_DUTY_MAX_TICKS; }
+
+    for (uint16_t d = PWM_DUTY_MIN_TICKS; d <= target_ticks; d++) {
+        pwm_set_duty(d);
+
+        for (uint16_t ev = 0u; ev < PWM_SOFTSTART_EVENTS_PER_STEP; ev++) {
+            TIM4->SR &= ~TIM_SR_UIF;
+            while (!(TIM4->SR & TIM_SR_UIF)) { }
+        }
+    }
 }

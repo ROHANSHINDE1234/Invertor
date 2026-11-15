@@ -38,6 +38,10 @@
 /* Current phase of the unfolder state machine (0..3, see file header). */
 static volatile uint8_t hb_phase;
 
+/* One-shot precharge flag: 1 during the initial LA+LB bootstrap-charge phase,
+ * cleared on the first TIM3 update so the normal POS/NEG sequence takes over. */
+static volatile uint8_t hb_precharge;
+
 /* Drive all four gates to the OFF request level — the dead-time / safe state.
  * GATE_IDLE is the MCU level meaning "off" (active-low = HIGH through the 6N137);
  * see hw_config.h §8. */
@@ -47,6 +51,31 @@ static void hbridge_all_off(void)
     gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LA, GATE_IDLE);
     gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HB, GATE_IDLE);
     gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LB, GATE_IDLE);
+}
+
+/*
+ * hbridge_safe_state — GPIO-only safe state, callable before the clock switch.
+ * PA1 (enable) → EN_OFF and all four gates → GATE_IDLE, via gpio_output_init_level
+ * so each pin comes up at its safe level with no glitch. EN is fixed active-high,
+ * so it uses HBRIDGE_EN_OFF, NOT GATE_IDLE.
+ */
+void hbridge_safe_state(void)
+{
+    gpio_output_init_level(HBRIDGE_PORT, HBRIDGE_PIN_EN, HBRIDGE_EN_OFF);
+    gpio_output_init_level(HBRIDGE_PORT, HBRIDGE_PIN_HA, GATE_IDLE);
+    gpio_output_init_level(HBRIDGE_PORT, HBRIDGE_PIN_LA, GATE_IDLE);
+    gpio_output_init_level(HBRIDGE_PORT, HBRIDGE_PIN_HB, GATE_IDLE);
+    gpio_output_init_level(HBRIDGE_PORT, HBRIDGE_PIN_LB, GATE_IDLE);
+}
+
+/*
+ * hbridge_disable — Drop the enable first (PA1 → EN_OFF disables both IR2110s
+ * via SD), then force the four gates off. Cut the enable before changing gates.
+ */
+void hbridge_disable(void)
+{
+    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_EN, HBRIDGE_EN_OFF);
+    hbridge_all_off();
 }
 
 /*
@@ -94,10 +123,10 @@ void hbridge_init(void)
     RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
 
     /* ── 2. Four gate pins as general-purpose push-pull outputs, LOW ── */
-    gpio_output_init(HBRIDGE_PORT, HBRIDGE_PIN_HA);
-    gpio_output_init(HBRIDGE_PORT, HBRIDGE_PIN_LA);
-    gpio_output_init(HBRIDGE_PORT, HBRIDGE_PIN_HB);
-    gpio_output_init(HBRIDGE_PORT, HBRIDGE_PIN_LB);
+    gpio_output_init_level(HBRIDGE_PORT, HBRIDGE_PIN_HA, GATE_IDLE);
+    gpio_output_init_level(HBRIDGE_PORT, HBRIDGE_PIN_LA, GATE_IDLE);
+    gpio_output_init_level(HBRIDGE_PORT, HBRIDGE_PIN_HB, GATE_IDLE);
+    gpio_output_init_level(HBRIDGE_PORT, HBRIDGE_PIN_LB, GATE_IDLE);
     hbridge_all_off();
 
     /* ── 3. Timebase: 1 µs per tick ─────────────────────────────────
@@ -112,9 +141,18 @@ void hbridge_init(void)
     TIM3->EGR |= TIM_EGR_UG;              /* preload PSC, reset counter        */
     TIM3->SR  &= ~TIM_SR_UIF;             /* clear the UG-generated update flag */
 
-    /* ── 4. Apply the first phase (POS conduction) ─────────────────── */
-    hb_phase = 0u;
-    hbridge_apply_phase(0u);
+    /* ── 4. Bootstrap precharge (one-shot) ──────────────────────────
+     * Both low-side gates (LA + LB) on for HBRIDGE_PRECHARGE_TICKS so each
+     * IR2110 high-side bootstrap cap charges before the first high-side turn-on.
+     * HA/HB stay off. Enable the bridge (PA1) LAST, once this state is set.
+     * The first TIM3 update clears hb_precharge and jumps to DEAD → POS. */
+    hb_precharge = 1u;
+    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HA, GATE_IDLE);
+    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_HB, GATE_IDLE);
+    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LA, GATE_ACTIVE);
+    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_LB, GATE_ACTIVE);
+    TIM3->ARR = HBRIDGE_PRECHARGE_TICKS;
+    gpio_write(HBRIDGE_PORT, HBRIDGE_PIN_EN, HBRIDGE_EN_ON);   /* enable LAST */
 
     /* ── 5. Enable the update interrupt and start ───────────────────
      * TIM3 is the only interrupt in the system (the push-pull is pure
@@ -137,7 +175,8 @@ void TIM3_IRQHandler(void)
 {
     if (TIM3->SR & TIM_SR_UIF) {
         TIM3->SR &= ~TIM_SR_UIF;                 /* clear before acting        */
-        hb_phase = (uint8_t)((hb_phase + 1u) & 0x3u);
+        if (hb_precharge) { hb_precharge = 0u; hb_phase = 3u; }  /* → 1 ms DEAD, then POS */
+        else              { hb_phase = (uint8_t)((hb_phase + 1u) & 0x3u); }
         hbridge_apply_phase(hb_phase);
     }
 }

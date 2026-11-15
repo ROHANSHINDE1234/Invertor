@@ -111,6 +111,11 @@
  * [PWM_DUTY_MIN_TICKS .. PWM_DUTY_MAX_TICKS] inside pwm_set_duty() regardless. */
 #define PWM_DUTY_FIXED_TICKS    PWM_DUTY_MAX_TICKS  /* 128 ticks = 16 µs ON (Rev E) */
 
+/* Soft-start pacing: TIM4 update events (one every 20 µs in center-aligned mode)
+ * held at each duty step while ramping from PWM_DUTY_MIN_TICKS to the target.
+ * 225 × 20 µs ≈ 4.5 ms/step × ~112 steps ≈ 0.5 s full ramp. */
+#define PWM_SOFTSTART_EVENTS_PER_STEP 225u  /* TIM4 updates (20 µs) per duty step, ~0.5 s ramp */
+
 /* ════════════════════════════════════════════════════════════════════
  * 6. POTENTIOMETER ADC INPUT
  *
@@ -148,6 +153,13 @@
 #define HBRIDGE_PIN_HB          6           /* Leg B high-side gate            */
 #define HBRIDGE_PIN_LB          7           /* Leg B low-side  gate            */
 
+/* H-bridge ENABLE line → 5th 6N137 → SD pin of BOTH H-bridge IR2110s.
+ * Fixed ACTIVE-HIGH (NOT via GATE_ACTIVE/GATE_IDLE): PA1 HIGH → SD LOW → bridge
+ * ENABLED; PA1 LOW/floating → SD HIGH → bridge DISABLED. */
+#define HBRIDGE_PIN_EN               1      /* PA1 on HBRIDGE_PORT, active-high enable */
+#define HBRIDGE_EN_ON                1u
+#define HBRIDGE_EN_OFF               0u
+
 /* TIM3 timebase for the unfolder state machine.
  *   PSC = 7 → 8 MHz / 8 = 1 MHz → 1 tick = 1 µs.
  *   Each 50 Hz period (20 ms) is built from four phases:
@@ -162,6 +174,11 @@
 #define HBRIDGE_TIM_PSC         7           /* 1 µs per tick                    */
 #define HBRIDGE_ACTIVE_TICKS    9000u       /* 9 ms conduction per half-cycle   */
 #define HBRIDGE_DEAD_TICKS      1000u       /* 1 ms dead-time per polarity swap */
+
+/* Bootstrap precharge: both low-side gates (LA+LB) on for 5 ms before the first
+ * polarity swap, so each IR2110 high-side bootstrap cap is charged before use.
+ * One-shot, replaced by the normal phase sequence on the first TIM3 update. */
+#define HBRIDGE_PRECHARGE_TICKS      5000u  /* 5 ms LA+LB on, TIM3 1 µs ticks */
 
 /* ════════════════════════════════════════════════════════════════════
  * 8. GATE-DRIVE POLARITY  (6N137 optocoupler compensation)
