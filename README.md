@@ -6,7 +6,7 @@ A personal DIY project to build a solar-powered backup power system for home use
 
 ## Project Status
 
-> **Two-stage inverter firmware working and logic-analyzer verified — active-low build for the 6N137 optocouplers, with controlled start-up (2026-11-16).** The STM32F103C8T6 runs from the external 8MHz crystal and drives: (1) an **input-side push-pull** on TIM4 — center-aligned dual-hardware-channel PWM on PB6/PB7, 25kHz, fixed 16µs ON-time reached via a ~0.5s soft-start ramp; and (2) a **50Hz H-bridge output unfolder** on TIM3 (PA4–PA7), gated by an active-high enable (PA1 → both IR2110 `SD` pins) with a 5ms bootstrap precharge at start-up. All six gates are forced to their OFF level before the clock switch, so power-up is glitch-free. Both stages' gate timing, dead-time and the start-up sequence have been confirmed on a logic analyzer — no shoot-through on either stage (see [Verification results](#verification-results-logic-analyzer)). Charger/BMS front-end is still in the design phase (see [Phases](#phases)).
+> **Two-stage inverter firmware working and logic-analyzer verified — active-low build for the 6N137 optocouplers, with controlled start-up (2026-11-16).** The STM32F103C8T6 runs from the external 8MHz crystal and drives: (1) an **input-side push-pull** on TIM4 — center-aligned dual-hardware-channel PWM on PB6/PB7, 25kHz, fixed 16µs ON-time reached via a ~0.5s soft-start ramp; and (2) a **50Hz H-bridge output unfolder** on TIM3 (PA4–PA7), gated by an active-high enable (PA1 → both IR2110 `SD` pins) with a 5ms bootstrap precharge at start-up. All six gates are forced to their OFF level before the clock switch, so power-up is glitch-free. Both stages' gate timing, dead-time and the start-up sequence have been confirmed on a logic analyzer — no shoot-through on either stage (see [Verification results](#verification-results-logic-analyzer)). The **Stage 1 push-pull power stage has now been bench-validated** on a soldered general-purpose board at ~9.7 W (12 V → ~205 V DC, ~78 % efficient at full load; see [Hardware Bring-up Trial Log](#hardware-bring-up-trial-log-stage-1-push-pull)); Stage 2 (H-bridge) hardware bring-up is next. Charger/BMS front-end is still in the design phase (see [Phases](#phases)).
 
 ---
 
@@ -75,13 +75,120 @@ The active-low inversion for the 6N137 is confirmed working on the primary, with
 
 ### ⚠️ Still to confirm before running real power
 
-The logic-analyzer verification covers the **MCU gate signals** (timing, dead-time, no overlap). It does *not* cover the power side. Before applying HV:
+The logic-analyzer verification covers the **MCU gate signals** (timing, dead-time, no overlap). It does *not* cover the power side — for the Stage 1 power-stage bench results (clamps, efficiency, load steps), see the [Hardware Bring-up Trial Log](#hardware-bring-up-trial-log-stage-1-push-pull). Before applying HV:
 
 1. **✅ Net drive polarity — resolved for 6N137 + IR2110.** The driver is the **IR2110, which is non-inverting** (HIN→HO, LIN→LO). The chain `MCU → 6N137 (inverts) → IR2110 (non-inverting) → MOSFET` therefore has exactly **one** inversion, which the firmware's active-low drive (`GATE_DRIVE_INVERTED = 1`, [hw_config.h](include/hw_config.h) §8) cancels: MCU low → opto high → IR2110 in high → gate ON; dead-time = MCU all high → opto all low → IR2110 all low → all MOSFETs off. **Correct as flashed.** (Still worth a one-time low-voltage bench check that all gates read OFF during the dead phases.)
 2. **🟡 Power-up / reset safe state — handled in firmware, with one residual hardware window.** Firmware now forces all gates OFF and the H-bridge enable (PA1) LOW *before* the clock switch, glitch-free (see [Controlled start-up](#controlled-start-up--h-bridge-enable-added-2026-11-16)), and the H-bridge stays disabled via `SD` until after its bootstrap precharge. That covers everything once code is executing. The **only** remaining exposure is the sub-millisecond window from reset release until `main()` runs, where the pins are high-Z: add a **pull-up on each MCU gate line** (so high-Z reset reads as gate-off for the always-enabled Stage-1), and the H-bridge IR2110 `SD` is held disabled by PA1 being LOW (pull PA1 down so it is disabled during that window too). **Still, do not apply HV until the firmware is running.**
 3. **IR2110 gives NO dead-time of its own.** It will pass HIN+LIN both-high straight through to HO+LO both-on (leg shoot-through). The cross-conduction protection is entirely the firmware's all-off dead phase (H-bridge) and the center-aligned dead-time (push-pull) — both logic-analyzer verified. Keep the dead-time invariants intact (see [hw_config.h](include/hw_config.h)); consider also using the IR2110 `SD` pins as a hardware backstop.
 4. **Bootstrap high-side supply.** Each IR2110 high-side driver needs its bootstrap cap + diode sized for the switching frequency, and the high-side gate can't stay on indefinitely (bootstrap droop) — fine here (25kHz push-pull / 50Hz H-bridge switch often enough), but verify VS/VB on the scope.
 5. **Differential output.** Scope node A vs node B across the bridge load and confirm a clean ±HV 50Hz square wave (not both nodes swinging in common mode) before connecting the transformer/load.
+
+---
+
+## Hardware Bring-up Trial Log (Stage 1 push-pull)
+
+This log records the **power-stage / hardware** bench trials for Stage 1 (the push-pull front end), as distinct from the firmware/logic-analyzer verification above. It is chronological; each trial notes goal, setup, result, root cause and fix.
+
+**Setup common to all trials:** EE20 transformer (Rev E: primary 22+22 turns bifilar SWG32 with centre tap, secondary 374 turns SWG38, n ≈ 17, Lm ≈ 110 µH per half), 2 × IRF3205, IR2110 used as a dual **low-side** driver (VS tied to GNDPWR), 6N137 optos, Blue Pill firmware at 25 kHz / 16 µs ON / 4 µs dead time. Bench: HTC DC3002 supplies (separate supplies for the gate drive and the transformer centre tap), Tektronix TBS1072B scope, logic analyzer, DMM.
+
+### A. Gate-drive bring-up [CONFIRM dates, ~Jul–Aug 2026]
+
+**Goal:** get a clean, fast 12 V gate drive to the two IRF3205s.
+
+**A1 — K1010 optocoupler rejected.** First wired with the output taken from the emitter (pin 3, follower mode) instead of the collector (pin 4) with a pull-up. More fundamentally, at 12 V the K1010 needs a load above ~4 kΩ to saturate but below ~320 Ω to reach 25 kHz bandwidth — both cannot be met at once. **Fix:** replaced by the 6N137 (~60 ns propagation delay).
+
+**A2 — Discrete BC547/BC557 totem-pole driver.** Three failure modes found:
+1. NPN/PNP emitters tied so both conducted → gate stuck at ~4 V;
+2. NPN/PNP positions swapped → PNP permanently on and overheating;
+3. 5 V logic driving a 12 V totem-pole → PNP never fully off, gate capped at ~5.4 V.
+
+**Fix:** replaced by the IR2110.
+
+**A3 — Software-toggled PB7.** PB7 was originally toggled in software from an ISR, racing PB6's hardware edge → shoot-through. **Fix:** center-aligned dual hardware channels — see [PWM / Dead-time scheme](#pwm--dead-time-scheme).
+
+**A4 — Result (gate drive verified):** 25 kHz, 16 µs ON, 4 µs dead time, gate amplitude **11.4 V / 12.2 V**, no overlap.
+
+_Scope capture: docs/trials/a4-gate-drive.jpg (to be added)_
+
+### B. First power-stage attempts [CONFIRM dates, ~Aug–Sep 2026]
+
+**B1 — First surge.** Centre tap connected straight to +12 V with no protection → core-saturation surge → **IR2110 damaged** (VCC–COM internal short; it drew excess current with no input signal). **Fix:** IR2110 replaced.
+
+**B2 — Series DC-blocking caps (topology error).** A back-to-back 220 µF electrolytic pair was placed **in series** with the centre-tap feed (intended as flux balancing) → only **2.5 V output**. Node voltages: 12 V before the caps, 3.1 V at the cap junction, 0 V at the centre tap; swapping the caps changed nothing. **Root cause:** the centre-tap feed carries one-way DC, so any series capacitor charges up and blocks it (series DC-blocking caps belong in half-bridges, not centre-tapped push-pulls). **Fix:** caps removed.
+
+**B3 — Series-choke trials in the centre-tap feed (dual supplies).**
+
+| Trial | Vin    | Series element          | Ideal peak | Measured | Note |
+|-------|--------|-------------------------|-----------|----------|------|
+| 1     | 5 V    | resistor only           | 83 V      | 75 V     | 90 % — best result |
+| 2     | ~4.7 V | 10 µH / 1 A choke       | 78 V      | 47 V     | choke over its rating (1.2 A) |
+| 3     | ~12 V  | 300 µH / 1 A choke      | 202 V     | 28 V     | |
+| 4     | ~12 V  | 2 × 300 µH in parallel  | 202 V     | 30 V     | halving L barely helped |
+| 5     | 12.2 V | 100 µH / 1 A choke      | 202 V     | 28 V     | clean switching |
+
+**Conclusion:** a series choke in a voltage-fed push-pull starves the transformer during the dead time (the choke current has nowhere to go and the centre tap flies). Chokes abandoned.
+
+### C. Breadboard trials [CONFIRM: late Oct 2026]
+
+**Setup:** centre-tap feed through a 0.5 Ω / 5 W resistor; bridge output on the secondary.
+
+- **0.5 Ω resistor, no bulk capacitor:** at 5 V in, 1.1 A input, 50–55 V at the bridge. The supply would not go above ~7–8 V (supply in current limit).
+- **220 µF / 50 V added** from centre tap to GNDPWR: 5 V in, 1.5–1.6 A, centre tap 3.3 V, 0.6 V across the resistor, 63 V at the bridge.
+- **1000 µF / 25 V instead:** still 63 V, same current → the capacitor was not the limit. Suspected breadboard contact resistance → power path moved to a soldered general-purpose board. _(Later found: the excessive current was really fault **D1** below.)_
+
+### D. Soldered general-purpose board (2026-11-12 / 13)
+
+**D1 — Shorted-turn fault (bare diode clamps).** 3 V at the centre tap via 0.5 Ω (0.69 V drop), **1.54 A input**, 55 V at the bridge — current **5–7 × too high** for no load (expected ≈ 0.2 A). Gate captures: clean, no overlap. Drain captures: the OFF drain only reached ≈ the tap voltage instead of 2 × tap voltage, with tall spikes at turn-off. **Root cause:** plain UF4007 diodes from each drain straight to the centre tap (an RCD clamp without the R and C). Each diode conducted for the whole on-time of the *other* switch, shorting that half-winding — a shorted turn on the transformer. **Fix:** diodes removed → input current fell to **0.01 A at 3 V**, and the OFF-drain plateau rose to 2 × Vtap. _Also found:_ scope probe on 1X while the scope was set to 10X → all readings 10× high.
+
+_Scope capture: docs/trials/d1-drain-shorted-turn.jpg (to be added)_
+
+**D2 — Centre-tap resistor removed.** The 0.5 Ω centre-tap resistor (R22) was removed. No change in behaviour; the centre tap is now fed directly, with the bulk capacitor at the tap.
+
+**D3 — Proper RCD clamps fitted.** Each half: UF4007 (anode at drain) → 22 nF / 100 V film ‖ 1 kΩ 1 W → centre tap. At 12 V, no load: drain plateau ≈ 2 × Vin (~27 V), drain peaks **39.2 V / 45.6 V**; clamp-capacitor voltage 9.7 V (at its floor, so lowering R would not help); input **12 V / 0.05 A**; bridge output **267 V DC unloaded** (C7 = 1 µF / 450 V, bleeder 1.5 MΩ). The unloaded 267 V is C7 peak-charging on ringing, **not** the real output. The DMM's "232 V AC" on the secondary is not reliable at 25 kHz.
+
+_Scope capture: docs/trials/d3-drain-rcd-clamp.jpg (to be added)_
+
+**D4 — Load steps at ~12 V input** (5 W cement resistors in parallel across the bridge output; MDB10S bridge):
+
+| Load (Ω)               | Vin / Iin     | Vout  | Pout   | Pin    | η     | Drain peaks Q1 / Q2 |
+|------------------------|---------------|-------|--------|--------|-------|---------------------|
+| 33 k                   | 12.2 V / 0.15 A | 212 V | 1.36 W | 1.83 W | ~75 % | 42.4 / 46.4 V |
+| 21 k                   | 12.0 V / 0.20 A | 204 V | 2.0 W  | 2.4 W  | ~83 % | 41.6 / 45.6 V |
+| 16.25 k (33k ‖ 32k)    | 12.1 V / 0.25 A | 203 V | 2.5 W  | 3.0 W  | ~84 % | 36.0 / 39.2 V |
+| 10.1 k (+27k)          | 12.1 V / 0.41 A | 203 V | 4.1 W  | 5.0 W  | ~82 % | 39.2 / 43.2 V |
+| 7.2 k (+25k)           | 12.2 V / 0.57 A | 205 V | 5.8 W  | 7.0 W  | ~83 % | 40.8 / 44.8 V, rising to 45.6 / 48.8 V after ~3 min |
+| 4.35 k (all six)       | 12.0 V / 1.03 A | 205 V | 9.7 W  | 12.4 W | ~78 % | 41.6 / 42.4 V |
+
+After the full-load run: MOSFETs and transformer cool; load resistors hot. Output regulation is flat (**203–205 V**) from 1.4 W to 9.7 W. From ~4 W up, each drain drops back low after its turn-off spike and only swaps at the other switch's turn-on → suspected slow reverse recovery of the MDB10S bridge (swap to 4 × UF4007 pending).
+
+_Scope capture: docs/trials/d4-load-steps.jpg (to be added)_
+
+**D5 — Transformer secondary waveform** (single probe across the secondary, 10X): at 2.0 V input / 0.02 A: **±37.6 V, 25.00 kHz, RMS 35.4 V**, symmetric (positive = negative, so flux balance is OK), effective ratio ≈ 18.3–18.8. At 12 V: checked by offsetting the trace (the scope tops out at 50 V/div): OK. [CONFIRM: 12 V plateau values]
+
+_Scope capture: docs/trials/d5-secondary.jpg (to be added)_
+
+### E. Result
+
+**Stage 1 hardware validated** — 12 V → ~205 V DC at ~9.7 W, ~78–84 % efficient, switches and transformer cool.
+
+### F. Open items for Stage 1
+
+- Replace the MDB10S with 4 × UF4007 and repeat the 7.2 k and 4.35 k steps.
+- Add P6KE39A TVS drain–source on each MOSFET (drain peaks up to 48.8 V vs the IRF3205's 55 V rating).
+- Overcurrent protection: shunt + LM393 → IR2110 SD trip-and-latch (planned).
+- 205 V bus is enough for the square-wave unfolder (~195 V RMS) but not for a 230 V sine (needs ~325 V): voltage doubler or more secondary turns, later.
+- Opto-output capacitors C1/C6 (Stage 1) and C43–C46 (Stage 2) must be ≤100 pF or removed (0.1 µF there slows the gate signals); the opto bypass belongs on pin 8–pin 5.
+
+### G. Lessons learned
+
+- Never put a capacitor in series with a push-pull centre-tap feed (it carries DC).
+- A clamp referenced to the centre tap needs its capacitor in series (RCD). A bare diode clamps the normal 2 × Vin and shorts the winding.
+- Series chokes don't work in a voltage-fed push-pull's centre-tap feed.
+- Breadboards can't carry the pulsed primary currents; solder the power path.
+- Check the probe attenuation switch matches the scope setting.
+- Measure the HV output under load; unloaded, C7 peak-charges to the ringing.
+- DMM AC readings at 25 kHz are not trustworthy; use the scope.
+- A supply current that doesn't scale with input voltage means a short, not magnetizing current.
 
 ---
 
@@ -494,6 +601,8 @@ The **IR2110 is non-inverting** (HIN→HO, LIN→LO) with an active-high `SD` sh
 - [ ] **Phase 1** — Datasheet study, component value calculations, schematic (KiCad)
 - [ ] **Phase 2** — PCB layout (KiCad), Gerber generation, send to JLCPCB
 - [ ] **Phase 3** — Assembly and bring-up
+  - [x] Stage 1 push-pull hardware bring-up on general-purpose board — validated to ~10 W (see [Hardware Bring-up Trial Log](#hardware-bring-up-trial-log-stage-1-push-pull))
+  - [ ] Stage 2 H-bridge hardware bring-up
 - [x] **Phase 4 (started early)** — Two-stage inverter firmware working and logic-analyzer verified on STM32 Blue Pill: center-aligned dual-hardware-channel push-pull (TIM4, 25kHz, fixed 16µs duty, 4µs dead-time, ~0.5s soft-start) + 50Hz H-bridge unfolder (TIM3, PA4–PA7, 1ms dead-time) with PA1 enable and 5ms bootstrap precharge, glitch-free safe-state power-up, active-low gate drive for 6N137 → IR2110, HSE crystal clock, no shoot-through on either stage; transformer spec and LTspice schematic drafted
 - [ ] **Phase 5** — WiFi control + LDR automation (STM32 + ESP8266/ESP32)
 
@@ -515,7 +624,7 @@ The **IR2110 is non-inverting** (HIN→HO, LIN→LO) with an active-high `SD` sh
 - KiCad — schematic and PCB layout (Phases 1–2, not yet started)
 - LTspice — push-pull power stage simulation (`Pushpull_ckt.asc`)
 - Logic analyzer — verified both stages' gate timing, dead-time and (active-low) polarity for the 6N137 optos (push-pull PB6/PB7, H-bridge PA4–PA7), the PA1 enable, and the safe-state/precharge/soft-start start-up sequence; confirmed no shoot-through (2026-11-16)
-- Oscilloscope + DMM — bench bring-up
+- Oscilloscope (Tektronix TBS1072B) + DMM — bench bring-up, and the Stage 1 power trials (drain, secondary and load-step measurements — see [Hardware Bring-up Trial Log](#hardware-bring-up-trial-log-stage-1-push-pull))
 
 **Not used, deliberately:** STM32 HAL/LL, STM32CubeMX/CubeIDE, or any RTOS. Everything is register-level C against the CMSIS + ST device headers vendored in [include/](include/).
 
