@@ -6,11 +6,11 @@ A personal DIY project to build a solar-powered backup power system for home use
 
 ## Project Status
 
-> **Two-stage inverter firmware working and logic-analyzer verified — active-low build for the 6N137 optocouplers (2026-07-26).** The STM32F103C8T6 runs from the external 8MHz crystal and drives: (1) an **input-side push-pull** on TIM4 — center-aligned dual-hardware-channel PWM on PB6/PB7, 25kHz, now at a fixed 16µs ON-time (the pot/ADC control has been removed); and (2) a **50Hz H-bridge output unfolder** on TIM3 (PA4–PA7). Both stages' gate timing and dead-time have been confirmed on a logic analyzer — no shoot-through on either stage (see [Verification results](#verification-results-logic-analyzer)). Charger/BMS front-end is still in the design phase (see [Phases](#phases)).
+> **Two-stage inverter firmware working and logic-analyzer verified — active-low build for the 6N137 optocouplers, with controlled start-up (2026-11-16).** The STM32F103C8T6 runs from the external 8MHz crystal and drives: (1) an **input-side push-pull** on TIM4 — center-aligned dual-hardware-channel PWM on PB6/PB7, 25kHz, fixed 16µs ON-time reached via a ~0.5s soft-start ramp; and (2) a **50Hz H-bridge output unfolder** on TIM3 (PA4–PA7), gated by an active-high enable (PA1 → both IR2110 `SD` pins) with a 5ms bootstrap precharge at start-up. All six gates are forced to their OFF level before the clock switch, so power-up is glitch-free. Both stages' gate timing, dead-time and the start-up sequence have been confirmed on a logic analyzer — no shoot-through on either stage (see [Verification results](#verification-results-logic-analyzer)). Charger/BMS front-end is still in the design phase (see [Phases](#phases)).
 
 ---
 
-## Bring-up Notes — Two-Stage Inverter (active-low verified 2026-07-26)
+## Bring-up Notes — Two-Stage Inverter (active-low + controlled start-up, verified 2026-11-16)
 
 > These notes capture the state of the firmware as flashed to the Blue Pill, and where it has been verified. Read this first if you are picking the board up for a trial.
 
@@ -27,11 +27,25 @@ Three changes brought the firmware from single-stage push-pull to a verified two
 3. **Pot/ADC duty control removed — fixed operating point.**
    The push-pull now runs at a single hardcoded duty, `PWM_DUTY_FIXED_TICKS = 128` ticks = 16µs ON (the Rev E maximum), set once at startup in [main.c](src/main.c). The ADC path is gone from the active firmware (`adc_driver.c` remains in the tree but is unused and gc-sectioned out of the binary). Change the one `PWM_DUTY_FIXED_TICKS` line in [hw_config.h](include/hw_config.h) to re-tune.
 
-Wiring: `hbridge_init()` is called from [main.c](src/main.c) after `pwm_pushpull_init()`; constants live in [hw_config.h](include/hw_config.h) §7; source added to [CMakeLists.txt](CMakeLists.txt). Flash usage is **2156 B** (of 128K). The project builds clean (`exit 0`, only the standard harmless `nosys`/RWX linker warnings).
+Wiring: `hbridge_init()` is called from [main.c](src/main.c) after `pwm_pushpull_init()`; constants live in [hw_config.h](include/hw_config.h) §7; source added to [CMakeLists.txt](CMakeLists.txt). Flash usage is **2508 B** (of 128K). The project builds clean (`exit 0`, only the standard harmless `nosys`/RWX linker warnings).
+
+### Controlled start-up & H-bridge enable (added 2026-11-16)
+
+A later revision added a safe, sequenced power-up (hw_config.h §8 keeps the same active-low polarity):
+
+1. **Glitch-free safe state, before the clock switch.** `hbridge_safe_state()` and `pwm_safe_state()` run first, as plain GPIO, driving all six gates to GATE_IDLE (OFF) and the H-bridge enable (PA1) to its disabled level. A new helper, `gpio_output_init_level()`, latches each pin's level *while it is still an input*, then switches it to output — so the pin comes up directly at OFF with **no transient LOW**. This matters because the push-pull (Stage-1) IR2110 has `SD` tied low (always enabled), so PB6/PB7 must read OFF from the first instant.
+
+2. **H-bridge hardware enable (PA1 → IR2110 `SD`).** A dedicated line, **PA1**, drives a 7th 6N137 whose output feeds the `SD` (shutdown) pins of *both* H-bridge IR2110s. It is **fixed active-high** (`HBRIDGE_EN_ON/OFF`, deliberately **not** via `GATE_ACTIVE/IDLE`): PA1 HIGH → `SD` LOW → bridge **enabled**; PA1 LOW/floating → `SD` HIGH → bridge **disabled**. `hbridge_disable()` drops it for fault/shutdown.
+
+3. **Bootstrap precharge.** `hbridge_init()` turns **both low-side gates (LA + LB) on for 5ms** before the first polarity swap, so each IR2110 high-side bootstrap cap charges before it is first needed. HA/HB stay off; the enable (PA1) is asserted **last**. The first TIM3 update ends the precharge and drops into the normal DEAD → POS → … sequence.
+
+4. **Push-pull soft-start.** `pwm_soft_start()` ramps the duty from minimum to `PWM_DUTY_FIXED_TICKS` over **~0.5s** (PB6/PB7 ON-time widening 2µs → 16µs), instead of a hard step, by polling TIM4's 20µs update flag between 1-tick increments.
+
+Start-up order in [main.c](src/main.c): `hbridge_safe_state()` → `pwm_safe_state()` → `clock_init_hse()` → `hbridge_init()` (precharge + enable) → `pwm_pushpull_init()` → `pwm_soft_start()` → idle. The AF hand-off of PB6/PB7 to TIM4 was also moved to *after* the `CC1P`/`CC2P` polarity is set, so those pins never momentarily drive the non-inverted level.
 
 ### Verification results (logic analyzer)
 
-Both stages captured on a logic analyzer and cross-checked against the design. The latest captures (2026-07-26) are of the **active-low** build (`GATE_DRIVE_INVERTED = 1`, for the 6N137 optos): a gate is ON when its MCU pin is **LOW**, and the dead-time reads as the relevant pins **HIGH**.
+Both stages captured on a logic analyzer and cross-checked against the design, on the **active-low** build (`GATE_DRIVE_INVERTED = 1`, for the 6N137 optos): a gate is ON when its MCU pin is **LOW**, and the dead-time reads as the relevant pins **HIGH**. The steady-state numbers below were re-confirmed on the controlled-start-up build from `updated_timings.csv` (2026-11-16; 53.6ms span, 1341 push-pull periods, 2.7 H-bridge periods), with **PA1 (enable) HIGH** throughout.
 
 **Input side — push-pull (PB6 = Q1, PB7 = Q2), active-low:** ✅ fully verified.
 
@@ -57,12 +71,14 @@ The active-low inversion for the 6N137 is confirmed working on the primary, with
 
 > An earlier 2026-07-26 capture appeared to show same-leg pairs (Ch4+Ch5, Ch6+Ch7) — that was a **Ch5↔Ch7 logic-analyzer probe swap**, not a firmware fault (the source drives the diagonals). With Ch5 on PA5 and Ch7 on PA7 the re-capture shows the correct diagonals `HA+LB` / `HB+LA`, every transition passing cleanly through the all-off dead state — no same-leg overlap.
 
+**Start-up sequence (safe state → precharge → soft-start):** ✅ confirmed **live on the logic analyzer** (2026-11-16), not CSV-exported — the one-shot power-up events are impractical to capture to file. Observed as designed: from reset, PA4–PA7/PB6/PB7 all HIGH (gates off) and PA1 LOW immediately; then PA5+PA7 (LA+LB) LOW for ~5ms with PA1 rising at its start (precharge); then 1ms all-HIGH and the normal 9/1ms unfold; and PB6/PB7 active-low pulses widening 2µs → 16µs over ~0.5s (soft-start).
+
 ### ⚠️ Still to confirm before running real power
 
 The logic-analyzer verification covers the **MCU gate signals** (timing, dead-time, no overlap). It does *not* cover the power side. Before applying HV:
 
 1. **✅ Net drive polarity — resolved for 6N137 + IR2110.** The driver is the **IR2110, which is non-inverting** (HIN→HO, LIN→LO). The chain `MCU → 6N137 (inverts) → IR2110 (non-inverting) → MOSFET` therefore has exactly **one** inversion, which the firmware's active-low drive (`GATE_DRIVE_INVERTED = 1`, [hw_config.h](include/hw_config.h) §8) cancels: MCU low → opto high → IR2110 in high → gate ON; dead-time = MCU all high → opto all low → IR2110 all low → all MOSFETs off. **Correct as flashed.** (Still worth a one-time low-voltage bench check that all gates read OFF during the dead phases.)
-2. **🔴 Power-up / reset safe state.** Active-low drive means "gate OFF" = MCU pin HIGH. During MCU reset and the brief window before `pwm_pushpull_init()`/`hbridge_init()` run, the pins are high-Z inputs — *not* high — so the optos aren't yet commanded off. Either add a **pull-up on each MCU gate line** (so high-Z reset reads as gate-off), **or hold the IR2110 `SD` (shutdown, active-high) pins asserted during reset** (pull SD high, released once firmware is up). **Do not apply HV until the firmware is running.** (With the earlier active-high scheme, reset-low was inherently safe; active-low reverses that, so the hardware must enforce it.)
+2. **🟡 Power-up / reset safe state — handled in firmware, with one residual hardware window.** Firmware now forces all gates OFF and the H-bridge enable (PA1) LOW *before* the clock switch, glitch-free (see [Controlled start-up](#controlled-start-up--h-bridge-enable-added-2026-11-16)), and the H-bridge stays disabled via `SD` until after its bootstrap precharge. That covers everything once code is executing. The **only** remaining exposure is the sub-millisecond window from reset release until `main()` runs, where the pins are high-Z: add a **pull-up on each MCU gate line** (so high-Z reset reads as gate-off for the always-enabled Stage-1), and the H-bridge IR2110 `SD` is held disabled by PA1 being LOW (pull PA1 down so it is disabled during that window too). **Still, do not apply HV until the firmware is running.**
 3. **IR2110 gives NO dead-time of its own.** It will pass HIN+LIN both-high straight through to HO+LO both-on (leg shoot-through). The cross-conduction protection is entirely the firmware's all-off dead phase (H-bridge) and the center-aligned dead-time (push-pull) — both logic-analyzer verified. Keep the dead-time invariants intact (see [hw_config.h](include/hw_config.h)); consider also using the IR2110 `SD` pins as a hardware backstop.
 4. **Bootstrap high-side supply.** Each IR2110 high-side driver needs its bootstrap cap + diode sized for the switching frequency, and the high-side gate can't stay on indefinitely (bootstrap droop) — fine here (25kHz push-pull / 50Hz H-bridge switch often enough), but verify VS/VB on the scope.
 5. **Differential output.** Scope node A vs node B across the bridge load and confirm a clean ±HV 50Hz square wave (not both nodes swinging in common mode) before connecting the transformer/load.
@@ -82,7 +98,7 @@ Invertor/
 │   └── launch.json                    # cortex-debug launch config (OpenOCD + ST-Link)
 │
 ├── src/                                # Firmware sources
-│   ├── main.c                         # Entry point: clock → push-pull PWM (fixed duty) → H-bridge → idle
+│   ├── main.c                         # Entry: safe states → clock → H-bridge → push-pull → soft-start → idle
 │   ├── clock_config.c                 # HSE (external crystal) clock startup
 │   ├── gpio_driver.c                  # Minimal register-level GPIO driver
 │   ├── adc_driver.c                   # ADC1 on PA0 (pot) — retained but unused; duty is now fixed
@@ -155,12 +171,12 @@ The firmware runs on an STM32F103C8T6 ("Blue Pill") and generates a dead-time-pr
 | Module | Responsibility |
 |---|---|
 | `clock_config.c` | Switches system clock to the external HSE crystal (8MHz) |
-| `gpio_driver.c` | Bare-metal GPIO helpers (push-pull output init, AF output init, write, toggle) |
+| `gpio_driver.c` | Bare-metal GPIO helpers — output init, AF output init, write, toggle, plus `gpio_output_init_level` (glitch-free level-before-output) |
 | `adc_driver.c` | ADC1 on PA0 in continuous conversion mode — was the duty-control pot reader; **retained but no longer called** (duty is fixed) |
-| `pwm_driver.c` | Configures TIM4 (center-aligned) for push-pull switching on PB6/PB7 — both native hardware channels, no ISR — and clamps duty |
-| `hbridge_driver.c` | TIM3 50 Hz H-bridge output unfolder on PA4–PA7; sequences the diagonal pairs with a dead-time gap via `TIM3_IRQHandler` |
-| `hw_config.h` | Single source of truth for pin mapping and PWM timing constants |
-| `main.c` | Wires the above together: clock → push-pull PWM (fixed duty) → H-bridge → idle |
+| `pwm_driver.c` | Configures TIM4 (center-aligned) for push-pull on PB6/PB7 — both native hardware channels, no ISR; `pwm_safe_state` (gates-off GPIO) and `pwm_soft_start` (duty ramp) |
+| `hbridge_driver.c` | TIM3 50 Hz H-bridge unfolder on PA4–PA7 + PA1 enable; bootstrap precharge, diagonal sequencing with a dead-time gap via `TIM3_IRQHandler`, plus `hbridge_safe_state`/`hbridge_disable` |
+| `hw_config.h` | Single source of truth for pin mapping, PWM/H-bridge timing, gate polarity, enable + precharge + soft-start constants |
+| `main.c` | Wires it together: safe states → clock → H-bridge (precharge+enable) → push-pull → soft-start → idle |
 
 The codebase follows a strict layering rule: **no peripheral register access or hardware constant appears outside a driver `.c` file and `hw_config.h`.** `main.c` contains only driver calls and application logic.
 
@@ -205,7 +221,7 @@ The push-pull runs at a **single hardcoded ON-time**. After bench-tuning with a 
 #define PWM_DUTY_FIXED_TICKS   PWM_DUTY_MAX_TICKS   /* 128 ticks = 16 µs ON (Rev E) */
 ```
 
-[main.c](src/main.c) calls `pwm_set_duty(PWM_DUTY_FIXED_TICKS)` once after `pwm_pushpull_init()`, then idles — there is no control loop. To re-tune, change that one line (clamped to `[16 .. 128]` ticks inside `pwm_set_duty()` regardless).
+[main.c](src/main.c) calls `pwm_soft_start(PWM_DUTY_FIXED_TICKS)` once after `pwm_pushpull_init()` — ramping the duty from minimum up to this value over ~0.5s — then idles; there is no control loop. To re-tune, change that one line (clamped to `[16 .. 128]` ticks inside `pwm_set_duty()` regardless).
 
 The ADC driver ([adc_driver.c](src/adc_driver.c)) is left in the tree for easy restoration but is no longer called, so the linker's `--gc-sections` drops it entirely from the binary. To put the pot back, restore `adc_init()`/`adc_read()` and the mapping loop from git history.
 
@@ -226,6 +242,8 @@ phase 3  DEAD : all off      1 ms
 ```
 
 The **all-off DEAD phase inserted at every polarity swap** is the safety mechanism: the two switches of a leg are never commanded on in adjacent phases, so the bridge can't be shorted top-to-bottom during a transition. 1 ms is deliberately generous for a first trial — tighten `HBRIDGE_DEAD_TICKS` once the gate drive is characterised.
+
+**Hardware enable (PA1 → IR2110 `SD`).** `hbridge_init()` does not jump straight into the unfold. It first holds **both low-side gates (LA + LB) on for 5ms** (`HBRIDGE_PRECHARGE_TICKS`) to charge each IR2110 high-side bootstrap cap, and asserts the enable (**PA1**, active-high → both IR2110 `SD` pins via a dedicated 6N137) **last**. PA1 HIGH enables the bridge; PA1 LOW/floating disables it. The precharge is a one-shot: the first TIM3 update clears it and the normal `DEAD → POS → DEAD → NEG …` sequence takes over. `hbridge_disable()` drops PA1 and all gates for fault handling. See [Controlled start-up](#controlled-start-up--h-bridge-enable-added-2026-11-16).
 
 Unlike the 25 kHz push-pull, this stage is *not* timing-critical (50 Hz, ms-scale dead-time), so a plain GPIO + ISR state machine is used rather than hardware PWM.
 
@@ -270,7 +288,7 @@ Produces `inverter_firmware.elf` and `inverter_firmware.bin`, and prints an `arm
 
 ```
    text    data     bss     dec     hex  filename
-   2156      20    1976    4152    1038  inverter_firmware.elf
+   2508      20    1976    4504    1198  inverter_firmware.elf
 ```
 
 There is no unit test suite — this is bare-metal firmware. Correctness is verified on hardware (logic analyzer on PB6/PB7 for the push-pull and PA4–PA7 for the H-bridge — see [Verification results](#verification-results-logic-analyzer)) or by register-level reasoning.
@@ -300,8 +318,11 @@ Debugging is configured in [.vscode/launch.json](.vscode/launch.json) via `corte
 | Push-pull switching frequency | 25kHz (TIM4, center-aligned) |
 | Push-pull ON-time (fixed) | 16µs per switch (128 ticks, Rev E max) |
 | Push-pull dead-time | 4µs per gap (at the fixed 16µs duty) |
+| Push-pull soft-start | ~0.5s ramp (2µs → 16µs ON) |
 | H-bridge output frequency | 50Hz (TIM3 unfolder) |
 | H-bridge dead-time | 1ms per polarity swap |
+| H-bridge bootstrap precharge | 5ms (LA+LB on before first swap) |
+| H-bridge enable | PA1 active-high → both IR2110 `SD` |
 | Inverter efficiency (assumed) | 80% |
 | Required battery energy | ~37.5Wh |
 
@@ -354,6 +375,7 @@ Debugging is configured in [.vscode/launch.json](.vscode/launch.json) via `corte
 | PB6 | TIM4_CH1 — Q1 push-pull gate (hardware PWM, mode 1, trough-centered) | AF push-pull output |
 | PB7 | TIM4_CH2 — Q2 push-pull gate (hardware PWM, mode 2, peak-centered) | AF push-pull output |
 | PA0 | ADC1_IN0 — former duty-control pot (unused; duty is now fixed) | Analog input (spare) |
+| PA1 | H-bridge ENABLE → both IR2110 `SD` pins (active-high: HIGH = enabled) | GP push-pull output |
 | PA4 | H-bridge Leg A high-side gate (HA) | GP push-pull output |
 | PA5 | H-bridge Leg A low-side gate (LA) | GP push-pull output |
 | PA6 | H-bridge Leg B high-side gate (HB) | GP push-pull output |
@@ -374,6 +396,8 @@ STM32 3.3V logic ──▶ 6N137 (isolation, INVERTS) ──▶ IR2110 (non-inve
 ```
 
 The **IR2110 is non-inverting** (HIN→HO, LIN→LO) with an active-high `SD` shutdown. Net inversions MCU→gate = **1** (the 6N137), which the firmware's active-low drive cancels — see the polarity note below. Each IR2110 drives one half-bridge (one high-side + one low-side); the H-bridge uses two. Note the IR2110 provides **no dead-time and no shoot-through protection of its own** — that is entirely the firmware's job (verified), so the dead-time invariants must stay intact.
+
+**H-bridge enable via `SD`.** A **7th 6N137** (driven by **PA1**) feeds the `SD` (shutdown) pins of *both* H-bridge IR2110s, giving firmware a hardware enable/disable independent of the gate signals. It is **active-high at the MCU** (PA1 HIGH → `SD` LOW → bridge enabled) and, unlike the gate lines, does **not** go through the active-low `GATE_*` macros. Firmware holds it disabled through reset, the safe state, and the 5ms bootstrap precharge, enabling the bridge only once that precharge state is set up.
 
 **Why 6N137 (replacing the earlier K1010):** the K1010 is a slow phototransistor optocoupler — its microsecond-scale response smears the fast 25kHz push-pull edges and cannot preserve the sharp 4µs dead-time, so the "fat" (fast-switching) gate signals came through distorted. The 6N137 is a **logic-output opto rated ~10 Mbit/s (~75 ns propagation delay)**, which passes the 25kHz push-pull and the 50Hz H-bridge edges cleanly. (The H-bridge alone would tolerate a slow opto, but all lines use 6N137 for a uniform, fast, isolated drive.)
 
@@ -452,9 +476,9 @@ The **IR2110 is non-inverting** (HIN→HO, LIN→LO) with an active-high `SD` sh
 | INA219 | SOT-23-8 or module | Amazon India |
 | Shunt resistor | 0.1Ω, 1%, 1W | Lamington Road |
 | Fuse + holder | 2A blade automotive | Local / Lamington Road |
-| Gate-drive optocoupler | **6N137** high-speed (~10 Mbit/s), ×6 — one per gate line; **replaces the slow K1010** which couldn't pass the fast switching edges | Lamington Road |
-| Opto output pull-up | ~1kΩ, ×6 (6N137 open-collector output) | Lamington Road |
-| Opto Vcc bypass cap | 0.1µF ceramic, ×6 (at each 6N137 pin 8) | Lamington Road |
+| Gate-drive optocoupler | **6N137** high-speed (~10 Mbit/s), ×7 — 6 gate lines + 1 H-bridge enable (PA1 → IR2110 `SD`); **replaces the slow K1010** which couldn't pass the fast switching edges | Lamington Road |
+| Opto output pull-up | ~1kΩ, ×7 (6N137 open-collector output) | Lamington Road |
+| Opto Vcc bypass cap | 0.1µF ceramic, ×7 (at each 6N137 pin 8) | Lamington Road |
 | Gate driver | **IR2110** (non-inverting high/low-side) — ×2 for the H-bridge (one per leg) + push-pull driver | Lamington Road |
 | Bootstrap diode + cap | fast diode (e.g. UF4007) + ~1µF, per IR2110 high-side | Lamington Road |
 | Gate resistors | ~10–22Ω per MOSFET gate | Lamington Road |
@@ -470,7 +494,7 @@ The **IR2110 is non-inverting** (HIN→HO, LIN→LO) with an active-high `SD` sh
 - [ ] **Phase 1** — Datasheet study, component value calculations, schematic (KiCad)
 - [ ] **Phase 2** — PCB layout (KiCad), Gerber generation, send to JLCPCB
 - [ ] **Phase 3** — Assembly and bring-up
-- [x] **Phase 4 (started early)** — Two-stage inverter firmware working and logic-analyzer verified on STM32 Blue Pill: center-aligned dual-hardware-channel push-pull (TIM4, 25kHz, fixed 16µs duty, 4µs dead-time) + 50Hz H-bridge unfolder (TIM3, PA4–PA7, 1ms dead-time), HSE crystal clock, no shoot-through on either stage; transformer spec and LTspice schematic drafted
+- [x] **Phase 4 (started early)** — Two-stage inverter firmware working and logic-analyzer verified on STM32 Blue Pill: center-aligned dual-hardware-channel push-pull (TIM4, 25kHz, fixed 16µs duty, 4µs dead-time, ~0.5s soft-start) + 50Hz H-bridge unfolder (TIM3, PA4–PA7, 1ms dead-time) with PA1 enable and 5ms bootstrap precharge, glitch-free safe-state power-up, active-low gate drive for 6N137 → IR2110, HSE crystal clock, no shoot-through on either stage; transformer spec and LTspice schematic drafted
 - [ ] **Phase 5** — WiFi control + LDR automation (STM32 + ESP8266/ESP32)
 
 ---
@@ -490,7 +514,7 @@ The **IR2110 is non-inverting** (HIN→HO, LIN→LO) with an active-high `SD` sh
 
 - KiCad — schematic and PCB layout (Phases 1–2, not yet started)
 - LTspice — push-pull power stage simulation (`Pushpull_ckt.asc`)
-- Logic analyzer — verified both stages' gate timing, dead-time and (active-low) polarity for the 6N137 optos (push-pull PB6/PB7, H-bridge PA4–PA7); confirmed no shoot-through (2026-07-26)
+- Logic analyzer — verified both stages' gate timing, dead-time and (active-low) polarity for the 6N137 optos (push-pull PB6/PB7, H-bridge PA4–PA7), the PA1 enable, and the safe-state/precharge/soft-start start-up sequence; confirmed no shoot-through (2026-11-16)
 - Oscilloscope + DMM — bench bring-up
 
 **Not used, deliberately:** STM32 HAL/LL, STM32CubeMX/CubeIDE, or any RTOS. Everything is register-level C against the CMSIS + ST device headers vendored in [include/](include/).
